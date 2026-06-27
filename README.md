@@ -4,11 +4,11 @@
 > 一个运行在本机的 AI CLI 会话运行时:统一管理多个 AI CLI 的 Session 与上下文,
 > 让其他本地程序通过统一接口调用大模型。
 
-> ⚠️ **状态:早期开发(pre-alpha)。** 已有可运行的最薄切片:`aisr ask` 端到端驱动
-> Claude(headless 解析 + session 捕获 + `--resume`,已对真实 claude 验证通过)。
-> 尚未实现:session 存储、daemon / HTTP API、Go SDK、Python 客户端、Cursor/Gemini。
-> 下文 **快速开始** 中的 daemon / `chat` / SDK 等仍为**目标接口**,以文档为准;
-> 当前真正能跑的见下方「现在能跑什么」。
+> ⚠️ **状态:早期开发(pre-alpha)。** 已可运行:`aisr ask`、`aisr session` 管理、
+> 以及 **daemon `aisr serve`**(Unix socket 上的 `/v1` HTTP API,NDJSON 流式),
+> 均已对真实 claude 验证通过(含按名 resume、优雅退出)。
+> 尚未实现:Go SDK、Python 客户端、Cursor/Gemini provider、TCP 鉴权。
+> 下文 **快速开始** 中的 `chat` / SDK 仍为**目标接口**;当前能跑的见「现在能跑什么」。
 
 ---
 
@@ -74,9 +74,23 @@ go build -o ./bin/aisr ./cmd/aisr
 # 输出归一化的 NDJSON 事件流(text / tool_use / usage / done ...)
 ./bin/aisr ask --json "你好"
 
-# 用上一次拿到的 session-id 续接上下文
-./bin/aisr ask --session <session-id> "我刚才问了什么?"
+# 用会话名续接上下文(首次自动创建)
+./bin/aisr ask --session dev "我刚才问了什么?"
 ```
+
+**daemon(给其他程序接入):**
+
+```bash
+./bin/aisr serve                      # 监听 ~/.aisr/aisr.sock
+
+# 另一个终端 / 任意语言的程序:
+curl --unix-socket ~/.aisr/aisr.sock http://localhost/v1/providers
+curl --unix-socket ~/.aisr/aisr.sock -N -X POST \
+  http://localhost/v1/sessions/dev/messages \
+  -H 'Content-Type: application/json' -d '{"prompt":"优化这个项目"}'   # NDJSON 流
+```
+
+端点与事件模型见 [docs/接口使用文档.md](docs/接口使用文档.md)。
 
 ## 快速开始(目标接口,规划中)
 

@@ -16,10 +16,13 @@ import (
 	"time"
 )
 
-// Sentinel errors, shared by the Manager and the storage implementation.
+// Sentinel errors, shared by the Manager, storage, and the API layer (which maps
+// them to HTTP status codes).
 var (
-	ErrNotFound = errors.New("session not found")
-	ErrExists   = errors.New("session already exists")
+	ErrNotFound         = errors.New("session not found")
+	ErrExists           = errors.New("session already exists")
+	ErrInvalidName      = errors.New("invalid session name")
+	ErrWorkspaceInvalid = errors.New("invalid workspace")
 )
 
 // Session is one managed conversation, persisted as JSON by a Store.
@@ -45,11 +48,11 @@ type Store interface {
 // ValidateName rejects names that are unsafe as a filename.
 func ValidateName(name string) error {
 	if name == "" {
-		return fmt.Errorf("session name is empty")
+		return fmt.Errorf("%w: empty", ErrInvalidName)
 	}
 	if name == "." || name == ".." || strings.Contains(name, "..") ||
 		strings.ContainsAny(name, `/\`) {
-		return fmt.Errorf("invalid session name %q", name)
+		return fmt.Errorf("%w: %q", ErrInvalidName, name)
 	}
 	return nil
 }

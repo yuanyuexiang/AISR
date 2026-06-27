@@ -54,6 +54,9 @@ func (m *Manager) Create(providerName, name, workspace string) (*Session, error)
 	return rec, nil
 }
 
+// Get returns one session by name (ErrNotFound if absent).
+func (m *Manager) Get(name string) (*Session, error) { return m.store.Load(name) }
+
 // List returns all sessions, most-recently-updated first.
 func (m *Manager) List() ([]*Session, error) { return m.store.List() }
 
@@ -185,12 +188,12 @@ func checkWorkspace(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("workspace does not exist: %s", path)
+			return fmt.Errorf("%w: does not exist: %s", ErrWorkspaceInvalid, path)
 		}
 		return err
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("workspace is not a directory: %s", path)
+		return fmt.Errorf("%w: not a directory: %s", ErrWorkspaceInvalid, path)
 	}
 	return nil
 }

@@ -1,8 +1,8 @@
-// Command aisr is the AISR CLI — a thin client over session.Manager.
+// Command aisr is the AISR CLI and daemon — both thin layers over session.Manager.
 //
-// Implemented: `aisr ask` (driving the Claude provider end to end) and
-// `aisr session create|list|remove`. The orchestration lives in the shared
-// session.Manager so the upcoming daemon reuses it (see 技术方案.md V1).
+// Implemented: `aisr ask`, `aisr session create|list|remove`, and `aisr serve`
+// (the daemon exposing the /v1 HTTP API over a Unix socket). See 技术方案.md V1
+// and docs/接口使用文档.md.
 package main
 
 import (
@@ -11,12 +11,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
+	"github.com/yuanyuexiang/aisr/internal/api"
 	"github.com/yuanyuexiang/aisr/internal/provider"
 	"github.com/yuanyuexiang/aisr/internal/provider/claude"
 	"github.com/yuanyuexiang/aisr/internal/session"
@@ -33,6 +38,8 @@ func main() {
 		os.Exit(cmdAsk(os.Args[2:]))
 	case "session":
 		os.Exit(cmdSession(os.Args[2:]))
+	case "serve":
+		os.Exit(cmdServe(os.Args[2:]))
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -50,6 +57,7 @@ Usage:
   aisr session create [flags]      create a managed session
   aisr session list                list managed sessions
   aisr session remove <name>       delete a managed session
+  aisr serve [flags]               run the daemon (HTTP API over a Unix socket)
 
 Run "aisr <command> -h" for flags.
 `)
@@ -72,7 +80,7 @@ func cmdAsk(argv []string) int {
 		return 2
 	}
 
-	mgr, err := openManager()
+	mgr, _, err := buildManager()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
@@ -153,7 +161,7 @@ func cmdSessionCreate(argv []string) int {
 	name := fs.String("name", "", "session name (auto-generated if empty)")
 	_ = fs.Parse(argv)
 
-	mgr, err := openManager()
+	mgr, _, err := buildManager()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
@@ -168,7 +176,7 @@ func cmdSessionCreate(argv []string) int {
 }
 
 func cmdSessionList(argv []string) int {
-	mgr, err := openManager()
+	mgr, _, err := buildManager()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
@@ -212,7 +220,7 @@ func cmdSessionRemove(argv []string) int {
 		return 2
 	}
 	name := argv[0]
-	mgr, err := openManager()
+	mgr, _, err := buildManager()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
@@ -229,28 +237,91 @@ func cmdSessionRemove(argv []string) int {
 	return 0
 }
 
+// --- serve (daemon) ---
+
+func cmdServe(argv []string) int {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	socket := fs.String("socket", "", "unix socket path (default ~/.aisr/aisr.sock)")
+	listen := fs.String("listen", "", "TCP address, e.g. 127.0.0.1:7878 (overrides --socket)")
+	_ = fs.Parse(argv)
+
+	// Install the signal handler before binding, so a SIGTERM that arrives the
+	// instant the socket appears is caught (graceful shutdown), not fatal.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	mgr, reg, err := buildManager()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "aisr:", err)
+		return 1
+	}
+	srv := api.NewServer(mgr, reg.List(), nil)
+
+	ln, cleanup, err := listenFor(*listen, *socket)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "aisr:", err)
+		return 1
+	}
+	defer cleanup()
+
+	httpSrv := &http.Server{Handler: srv.Handler()}
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+	}()
+
+	fmt.Fprintf(os.Stderr, "aisr serve: listening on %s\n", ln.Addr())
+	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		fmt.Fprintln(os.Stderr, "aisr:", err)
+		return 1
+	}
+	return 0
+}
+
+// listenFor opens a TCP or Unix listener and returns a cleanup func.
+func listenFor(tcpAddr, socketPath string) (net.Listener, func(), error) {
+	if tcpAddr != "" {
+		ln, err := net.Listen("tcp", tcpAddr)
+		return ln, func() {}, err
+	}
+	path := socketPath
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, nil, err
+		}
+		path = filepath.Join(home, ".aisr", "aisr.sock")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, nil, err
+	}
+	// Clean up a stale socket left by a previous unclean exit.
+	if fi, err := os.Stat(path); err == nil && fi.Mode()&os.ModeSocket != 0 {
+		_ = os.Remove(path)
+	}
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, nil, err
+	}
+	_ = os.Chmod(path, 0o600)
+	return ln, func() { _ = os.Remove(path) }, nil
+}
+
 // --- wiring ---
 
-// openManager builds the shared Manager over the default file store and the
-// provider resolver. The daemon will construct its Manager the same way.
-func openManager() (*session.Manager, error) {
+// buildManager constructs the shared Manager (over the default file store) and
+// the provider registry. The CLI and the daemon both build it this way.
+func buildManager() (*session.Manager, *provider.Registry, error) {
 	dir, err := storage.DefaultDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	store, err := storage.New(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return session.NewManager(store, pickProvider), nil
-}
-
-// pickProvider is the ProviderResolver (the Router): name -> implementation.
-func pickProvider(name string) (provider.Provider, error) {
-	switch name {
-	case "claude":
-		return claude.New(), nil
-	default:
-		return nil, fmt.Errorf("unsupported provider %q (only \"claude\" in this slice)", name)
-	}
+	reg := provider.NewRegistry(claude.New())
+	return session.NewManager(store, reg.Resolve), reg, nil
 }

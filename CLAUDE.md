@@ -4,31 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Early development (pre-alpha) — a working vertical slice + persisted sessions.**
-Implemented: `aisr ask` driving the Claude provider end to end (spawn `claude`
-headless, parse stream-json NDJSON, normalize to `provider.Event`, capture session
-id, `--resume`); and `aisr session create|list|remove` with records persisted under
-`~/.aisr/sessions` (one JSON per session). `ask --session <name>` resumes by
-friendly name (lazy-creates the record on first use). Verified against real `claude`
-(CLI 2.1.193): create → ask → resume-by-name → list → remove all work, session id
-stable. **Not yet built:** daemon / HTTP API, Go SDK, Python client, Cursor/Gemini
-providers. Module: `github.com/yuanyuexiang/aisr` (zero external deps). Git repo
-(branch `main`).
+**Early development (pre-alpha) — CLI + persisted sessions + daemon (HTTP API).**
+Core orchestration lives in `session.Manager` (shared by CLI and daemon). The CLI
+(`aisr ask`, `aisr session create|list|remove`) and the daemon (`aisr serve`,
+exposing the `/v1` HTTP API over a Unix socket with NDJSON streaming) are both thin
+layers over it. Sessions persist under `~/.aisr/sessions` (one JSON each); `--session
+<name>` / `POST /v1/sessions/{name}/messages` resume by friendly name (lazy-create on
+first use). Verified against real `claude` (CLI 2.1.193): CLI and daemon both do
+create → ask → resume → list → remove; daemon does graceful shutdown (SIGTERM → exit
+0, socket unlinked). **Not yet built:** Go SDK, Python client, Cursor/Gemini
+providers, TCP auth/token. Module: `github.com/yuanyuexiang/aisr` (zero external
+deps). Git repo (branch `main`).
 
 Build, test & run (also see [Makefile](Makefile): `make build|vet|test`):
 
 ```bash
 go build -o ./bin/aisr ./cmd/aisr           # build
-go vet ./... && go test ./...               # vet + unit tests (claude parser)
+go vet ./... && go test ./...               # vet + unit tests (parser, manager, api)
 ./bin/aisr ask "你好"                        # ephemeral one-shot; session id -> stderr
-./bin/aisr ask --json "你好"                 # normalized NDJSON events
 ./bin/aisr session create --name dev --workspace ./demo
 ./bin/aisr ask --session dev "继续上文"       # resume by name; persists provider session
-./bin/aisr session list
+./bin/aisr serve                            # daemon on ~/.aisr/aisr.sock
+curl --unix-socket ~/.aisr/aisr.sock -N -X POST \
+  http://localhost/v1/sessions/dev/messages -d '{"prompt":"hi"}'   # NDJSON stream
 ```
 
-Note: `claude` parser logic lives in [internal/provider/claude/claude.go](internal/provider/claude/claude.go);
-when its event mapping changes, update the fixture tests in `claude_test.go`.
+Notes for implementers:
+- `claude` parser logic lives in [internal/provider/claude/claude.go](internal/provider/claude/claude.go);
+  when its event mapping changes, update `claude_test.go`.
+- The daemon installs its signal handler **before** binding (avoids a startup race);
+  keep it that way when editing `cmdServe`.
+- **Unix socket path length limit (~104 chars on macOS)**: `~/.aisr/aisr.sock` is
+  fine, but a long custom `--socket` path fails with `bind: invalid argument`.
 
 Treat [技术方案.md](技术方案.md) as the source of truth for design decisions; this
 file summarizes it for quick orientation. If the spec and an instruction conflict,
