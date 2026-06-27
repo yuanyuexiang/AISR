@@ -1,19 +1,28 @@
-// Package session defines the persisted session record.
+// Package session is the Session Manager: session records, lifecycle, and the
+// orchestration shared by the CLI and the daemon (see 技术方案.md §五).
 //
-// A session's identity is its name + the underlying provider session id; the
-// process is a disposable carrier (see 技术方案.md §六). Persistence lives in
-// the storage package; orchestration currently lives in cmd/aisr (a Manager will
-// be extracted when the daemon needs it).
+// To avoid an import cycle (storage depends on this package's Session type), the
+// Manager depends on the Store *interface* defined here — storage implements it,
+// not the other way around (dependency inversion). Likewise providers are reached
+// via a ProviderResolver injected by the caller, so this package needs no concrete
+// provider import.
 package session
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
 
-// Session is one managed conversation, persisted as a JSON file by storage.Store.
+// Sentinel errors, shared by the Manager and the storage implementation.
+var (
+	ErrNotFound = errors.New("session not found")
+	ErrExists   = errors.New("session already exists")
+)
+
+// Session is one managed conversation, persisted as JSON by a Store.
 type Session struct {
 	Name            string    `json:"name"`             // AISR-facing handle (friendly)
 	Provider        string    `json:"provider"`         // claude / cursor / gemini
@@ -21,6 +30,16 @@ type Session struct {
 	ProviderSession string    `json:"provider_session"` // underlying CLI session id; "" until first turn
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// Store is the persistence contract the Manager depends on. The storage package
+// implements it; defining it here keeps the dependency pointing storage→session.
+type Store interface {
+	Exists(name string) bool
+	Save(rec *Session) error
+	Load(name string) (*Session, error) // returns ErrNotFound if absent
+	List() ([]*Session, error)
+	Remove(name string) error // returns ErrNotFound if absent
 }
 
 // ValidateName rejects names that are unsafe as a filename.

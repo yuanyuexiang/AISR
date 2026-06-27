@@ -1,8 +1,8 @@
-// Command aisr is the AISR CLI.
+// Command aisr is the AISR CLI — a thin client over session.Manager.
 //
-// Implemented so far: `aisr ask` (driving the Claude provider end to end) and
-// `aisr session create|list|remove` (persisted session management). daemon /
-// HTTP API / Go SDK come next (see 技术方案.md V1).
+// Implemented: `aisr ask` (driving the Claude provider end to end) and
+// `aisr session create|list|remove`. The orchestration lives in the shared
+// session.Manager so the upcoming daemon reuses it (see 技术方案.md V1).
 package main
 
 import (
@@ -13,11 +13,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
-	"time"
 
 	"github.com/yuanyuexiang/aisr/internal/provider"
 	"github.com/yuanyuexiang/aisr/internal/provider/claude"
@@ -74,59 +72,22 @@ func cmdAsk(argv []string) int {
 		return 2
 	}
 
-	var (
-		st      *storage.Store
-		rec     *session.Session
-		managed = *sessName != ""
-		prv     provider.Provider
-		opts    provider.SessionOpts
-	)
-
-	if managed {
-		if err := session.ValidateName(*sessName); err != nil {
-			fmt.Fprintln(os.Stderr, "aisr:", err)
-			return 2
-		}
-		var err error
-		if st, err = openStore(); err != nil {
-			fmt.Fprintln(os.Stderr, "aisr:", err)
-			return 1
-		}
-		rec, err = st.Load(*sessName)
-		if errors.Is(err, storage.ErrNotFound) {
-			rec = &session.Session{ // lazy-create on first use
-				Name:      *sessName,
-				Provider:  *provName,
-				Workspace: absPath(*workspace),
-				CreatedAt: time.Now(),
-			}
-		} else if err != nil {
-			fmt.Fprintln(os.Stderr, "aisr:", err)
-			return 1
-		}
-		if prv, err = pickProvider(rec.Provider); err != nil {
-			fmt.Fprintln(os.Stderr, "aisr:", err)
-			return 2
-		}
-		opts = provider.SessionOpts{SessionID: rec.ProviderSession, Workspace: rec.Workspace, Model: *model}
-	} else {
-		var err error
-		if prv, err = pickProvider(*provName); err != nil {
-			fmt.Fprintln(os.Stderr, "aisr:", err)
-			return 2
-		}
-		opts = provider.SessionOpts{Workspace: absPath(*workspace), Model: *model}
-	}
-
-	if err := checkWorkspace(opts.Workspace); err != nil {
+	mgr, err := openManager()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
-		return 2
+		return 1
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	turn, err := prv.Send(ctx, opts, prompt)
+	turn, err := mgr.Ask(ctx, session.AskRequest{
+		SessionName: *sessName,
+		Provider:    *provName,
+		Workspace:   *workspace,
+		Model:       *model,
+		Prompt:      prompt,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
@@ -151,17 +112,16 @@ func cmdAsk(argv []string) int {
 		fmt.Println()
 	}
 
-	// turn.SessionID is valid only now that the stream is fully drained.
-	switch {
-	case managed && turn.SessionID != "":
-		rec.ProviderSession = turn.SessionID
-		rec.UpdatedAt = time.Now()
-		if err := st.Save(rec); err != nil {
-			fmt.Fprintln(os.Stderr, "aisr: warning: could not save session:", err)
+	// turn.Session / SaveErr are valid only now that the stream is drained.
+	if turn.SaveErr != nil {
+		fmt.Fprintln(os.Stderr, "aisr: warning: could not save session:", turn.SaveErr)
+	}
+	if s := turn.Session; s != nil && s.ProviderSession != "" {
+		if turn.Managed {
+			fmt.Fprintf(os.Stderr, "session: %s (%s)\n", s.Name, s.ProviderSession)
+		} else {
+			fmt.Fprintf(os.Stderr, "session: %s\n", s.ProviderSession)
 		}
-		fmt.Fprintf(os.Stderr, "session: %s (%s)\n", rec.Name, rec.ProviderSession)
-	case turn.SessionID != "":
-		fmt.Fprintf(os.Stderr, "session: %s\n", turn.SessionID)
 	}
 	return exit
 }
@@ -193,51 +153,27 @@ func cmdSessionCreate(argv []string) int {
 	name := fs.String("name", "", "session name (auto-generated if empty)")
 	_ = fs.Parse(argv)
 
-	if _, err := pickProvider(*provName); err != nil {
-		fmt.Fprintln(os.Stderr, "aisr:", err)
-		return 2
-	}
-	sname := *name
-	if sname == "" {
-		sname = session.GenName(*provName)
-	}
-	if err := session.ValidateName(sname); err != nil {
-		fmt.Fprintln(os.Stderr, "aisr:", err)
-		return 2
-	}
-	if err := checkWorkspace(absPath(*workspace)); err != nil {
-		fmt.Fprintln(os.Stderr, "aisr:", err)
-		return 2
-	}
-	st, err := openStore()
+	mgr, err := openManager()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
 	}
-	if st.Exists(sname) {
-		fmt.Fprintf(os.Stderr, "aisr: session %q already exists\n", sname)
-		return 1
-	}
-	now := time.Now()
-	rec := &session.Session{
-		Name: sname, Provider: *provName, Workspace: absPath(*workspace),
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if err := st.Save(rec); err != nil {
+	rec, err := mgr.Create(*provName, *name, *workspace)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
 	}
-	fmt.Printf("Session: %s\n", sname)
+	fmt.Printf("Session: %s\n", rec.Name)
 	return 0
 }
 
 func cmdSessionList(argv []string) int {
-	st, err := openStore()
+	mgr, err := openManager()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
 	}
-	recs, err := st.List()
+	recs, err := mgr.List()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
@@ -276,13 +212,13 @@ func cmdSessionRemove(argv []string) int {
 		return 2
 	}
 	name := argv[0]
-	st, err := openStore()
+	mgr, err := openManager()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
 	}
-	if err := st.Remove(name); err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
+	if err := mgr.Remove(name); err != nil {
+		if errors.Is(err, session.ErrNotFound) {
 			fmt.Fprintf(os.Stderr, "aisr: no such session %q\n", name)
 			return 1
 		}
@@ -293,45 +229,23 @@ func cmdSessionRemove(argv []string) int {
 	return 0
 }
 
-// --- helpers ---
+// --- wiring ---
 
-func openStore() (*storage.Store, error) {
+// openManager builds the shared Manager over the default file store and the
+// provider resolver. The daemon will construct its Manager the same way.
+func openManager() (*session.Manager, error) {
 	dir, err := storage.DefaultDir()
 	if err != nil {
 		return nil, err
 	}
-	return storage.New(dir)
-}
-
-func absPath(p string) string {
-	if p == "" {
-		return ""
-	}
-	if abs, err := filepath.Abs(p); err == nil {
-		return abs
-	}
-	return p
-}
-
-// checkWorkspace validates that a non-empty workspace path is an existing dir,
-// turning the exec-layer chdir failure into a clear up-front error.
-func checkWorkspace(path string) error {
-	if path == "" {
-		return nil
-	}
-	info, err := os.Stat(path)
+	store, err := storage.New(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("workspace does not exist: %s", path)
-		}
-		return err
+		return nil, err
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("workspace is not a directory: %s", path)
-	}
-	return nil
+	return session.NewManager(store, pickProvider), nil
 }
 
+// pickProvider is the ProviderResolver (the Router): name -> implementation.
 func pickProvider(name string) (provider.Provider, error) {
 	switch name {
 	case "claude":

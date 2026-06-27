@@ -6,7 +6,6 @@ package storage
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,10 +14,8 @@ import (
 	"github.com/yuanyuexiang/aisr/internal/session"
 )
 
-// ErrNotFound is returned when a session record does not exist.
-var ErrNotFound = errors.New("session not found")
-
-// Store reads/writes session records under a directory.
+// Store reads/writes session records under a directory. It implements
+// session.Store; ErrNotFound is the shared sentinel session.ErrNotFound.
 type Store struct {
 	dir string
 }
@@ -64,7 +61,7 @@ func (s *Store) Load(name string) (*session.Session, error) {
 	b, err := os.ReadFile(s.path(name))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, ErrNotFound
+			return nil, session.ErrNotFound
 		}
 		return nil, err
 	}
@@ -103,7 +100,7 @@ func (s *Store) List() ([]*session.Session, error) {
 func (s *Store) Remove(name string) error {
 	err := os.Remove(s.path(name))
 	if os.IsNotExist(err) {
-		return ErrNotFound
+		return session.ErrNotFound
 	}
 	return err
 }
