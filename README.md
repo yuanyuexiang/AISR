@@ -8,8 +8,8 @@
 > daemon **`aisr serve`**(Unix socket 上的 `/v1` HTTP API,NDJSON 流式)、
 > **Go SDK**([pkg/sdk](pkg/sdk/sdk.go))与 **Python 客户端**
 > ([clients/python](clients/python/))——均已对真实 claude 验证通过(含按名
-> resume、优雅退出)。尚未实现:Cursor/Gemini provider、TCP 鉴权、常驻进程池。
-> 下文 **快速开始** 中的 `chat` 仍为**目标接口**;当前能跑的见「现在能跑什么」。
+> resume、优雅退出)。尚未实现:Cursor/Gemini provider、`aisr chat`、TCP 鉴权、
+> 常驻进程池。上手见下方 **使用方法**。
 
 ---
 
@@ -56,99 +56,125 @@ AISR 复用它们登录好的凭据,在 headless 模式下统一驱动它们,把
 
 | Provider | 集成模式 | 状态 |
 |----------|---------|------|
-| Claude Code | structured(`-p --output-format stream-json --verbose`) | ✅ spike 已验证,待实现 |
+| Claude Code | structured(`-p --output-format stream-json --verbose`) | ✅ 已实现 |
 | Cursor CLI | 待验证(structured / pty) | spike 后加入 |
 | Gemini CLI | 待验证(structured / pty) | spike 后加入 |
 
 > Codex CLI 暂不纳入。集成可行性以 [技术方案.md](技术方案.md) §十 的 spike 结论为准。
 
-## 现在能跑什么
+## 使用方法
 
-最薄垂直切片:`aisr ask` 端到端驱动 Claude(前提:本机已安装并登录 `claude`)。
+### 0. 前提
+
+* 本机已安装并登录 `claude`(确认:`claude -p "hi"` 能正常回话)。
+* 构建需 Go 1.22+;用 Python 客户端需 `python3`(标准库即可,无第三方依赖)。
+
+### 1. 构建
 
 ```bash
-go build -o ./bin/aisr ./cmd/aisr
-
-# 一次性提问(session-id 打印到 stderr,便于复用)
-./bin/aisr ask "用一句话回答:1+1等于几"
-
-# 输出归一化的 NDJSON 事件流(text / tool_use / usage / done ...)
-./bin/aisr ask --json "你好"
-
-# 用会话名续接上下文(首次自动创建)
-./bin/aisr ask --session dev "我刚才问了什么?"
+go build -o ./bin/aisr ./cmd/aisr      # 或:make build
 ```
 
-**daemon(给其他程序接入):**
+### 2. 启动守护进程(daemon)
+
+daemon 是给**其他程序接入**用的。开一个终端挂着:
 
 ```bash
-./bin/aisr serve                      # 监听 ~/.aisr/aisr.sock
+./bin/aisr serve                       # 监听 ~/.aisr/aisr.sock
+# 自定义:--socket /path/aisr.sock   或   --listen 127.0.0.1:7878 (TCP)
+```
 
-# 另一个终端 / 任意语言的程序:
+看到 `aisr serve: listening on ...` 即成功。`Ctrl-C` 或 `kill`(SIGTERM)优雅退出
+并清理 socket。
+
+> Unix socket 路径有长度上限(macOS 约 104 字节),默认路径没问题,自定义 `--socket`
+> 别用过长路径。
+
+### 3. 命令行用法(CLI,不需要 daemon)
+
+CLI 直连磁盘,自己在终端用很方便:
+
+```bash
+# 一次性提问(临时会话;session-id 打到 stderr)
+./bin/aisr ask "用一句话回答:1+1等于几"
+./bin/aisr ask --json "你好"                       # 输出 NDJSON 事件流
+
+# 受管理的会话(按名字 resume,首次自动创建)
+./bin/aisr session create --name dev --workspace ./demo
+./bin/aisr ask --session dev "记住数字 7"
+./bin/aisr ask --session dev "我让你记的数字?"     # 自动接上上下文
+./bin/aisr session list
+./bin/aisr session remove dev
+```
+
+### 4. 用 Python 调用(daemon 需在跑)
+
+最快——跑自带示例:
+
+```bash
+PYTHONPATH=clients/python python3 clients/python/example.py "用一句话回答:1+1等于几"
+```
+
+自己写几行(`PYTHONPATH` 指到 [clients/python](clients/python/) 即可 `import aisr`):
+
+```python
+from aisr import Client
+
+c = Client()                       # 默认连 ~/.aisr/aisr.sock
+
+# 流式一轮;session 不存在会自动创建
+for ev in c.send("dev", "优化这个 Go 项目", workspace="./demo"):
+    if ev.kind == "text":
+        print(ev.text, end="", flush=True)
+    elif ev.kind == "error":
+        raise RuntimeError(ev.text)
+
+# 同名再问一次 = 自动 resume,接上上下文
+for ev in c.send("dev", "刚才你建议了什么?"):
+    if ev.kind == "text":
+        print(ev.text, end="", flush=True)
+
+# 会话管理
+c.providers()
+c.list_sessions()
+c.get_session("dev")
+c.remove_session("dev")
+```
+
+事件 `kind` 取值:`text` / `tool_use` / `tool_result` / `usage` / `error` / `done`。
+详见 [clients/python/README.md](clients/python/README.md)。
+
+### 5. 用 Go 调用(daemon 需在跑)
+
+```bash
+go run ./examples/go -session dev "用一句话回答:1+1等于几"
+```
+
+```go
+import "github.com/yuanyuexiang/aisr/pkg/sdk"
+
+c := sdk.New()                     // 默认连 ~/.aisr/aisr.sock
+events, err := c.Send(ctx, "dev", "优化这个 Go 项目", sdk.SendOptions{Workspace: "./demo"})
+if err != nil { /* ... */ }
+for ev := range events {
+    if ev.Kind == sdk.EventText {
+        fmt.Print(ev.Text)
+    }
+}
+```
+
+### 6. 用 curl / 任意语言(HTTP over Unix socket)
+
+```bash
 curl --unix-socket ~/.aisr/aisr.sock http://localhost/v1/providers
 curl --unix-socket ~/.aisr/aisr.sock -N -X POST \
   http://localhost/v1/sessions/dev/messages \
   -H 'Content-Type: application/json' -d '{"prompt":"优化这个项目"}'   # NDJSON 流
 ```
 
-端点与事件模型见 [docs/接口使用文档.md](docs/接口使用文档.md)。
-
-**Go SDK / Python 客户端**(daemon 在跑即可,几行代码接入):
-
-```bash
-go run ./examples/go -session demo "用一句话回答:1+1等于几"        # Go SDK
-PYTHONPATH=clients/python python3 clients/python/example.py "你好"  # Python
-```
-
-代码见 [pkg/sdk](pkg/sdk/sdk.go) 与 [clients/python](clients/python/)。
-
-## 快速开始(目标接口,规划中)
-
-```bash
-# 前提:本机已安装并登录 claude / cursor / gemini
-
-# 启动本地 daemon(监听 ~/.aisr/aisr.sock)
-aisr serve
-
-# 创建一个绑定到某 workspace 的会话
-aisr session create --provider claude --workspace ./demo   # -> Session: dev-001
-
-# 一次性调用(--json 输出 NDJSON 事件,便于脚本解析)
-aisr ask --session dev-001 "优化这个 Go 项目"
-
-# 进入交互模式
-aisr chat --session dev-001
-
-# 查看 / 删除
-aisr session list
-aisr session remove dev-001
-```
-
-### 在你的程序里调用
-
-Go:
-
-```go
-client := sdk.NewClient()                 // 默认连 ~/.aisr/aisr.sock
-sess, _ := client.CreateSession(ctx, sdk.SessionOpts{Provider: "claude", Workspace: "./demo"})
-events, _ := client.Send(ctx, sess.ID, "优化这个 Go 项目")
-for ev := range events {
-    if ev.Kind == sdk.EventText { fmt.Print(ev.Text) }
-}
-```
-
-Python:
-
-```python
-from aisr import Client
-client = Client()
-session = client.create_session(provider="claude", workspace="./demo")
-for event in client.send(session.id, "优化这个 Go 项目"):
-    if event.kind == "text":
-        print(event.text, end="", flush=True)
-```
-
 完整端点、事件模型与错误码见 **[docs/接口使用文档.md](docs/接口使用文档.md)**。
+
+> 计划中(尚未实现):`aisr chat`(交互式 REPL)、`cancel` 端点、TCP 鉴权 token。
 
 ## 路线图
 
