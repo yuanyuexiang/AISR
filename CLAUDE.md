@@ -18,7 +18,12 @@ against the real CLIs: CLI, daemon, Go SDK, and Python client all do create → 
 resume → list → remove for both providers; daemon does graceful shutdown (SIGTERM →
 exit 0, socket unlinked). Adding Cursor needed **zero** changes to CLI/daemon/SDK —
 only registering `cursor.New()` in the registry — confirming the abstraction holds.
-**Not yet built:** Gemini provider, TCP auth/token, resident process pool. Module:
+The daemon also serves over **TCP** (`serve --listen ADDR`), which **requires a
+bearer token** (`--token` / `AISR_TOKEN`); the Unix socket relies on file perms.
+Clients (Go SDK, Python) read `AISR_BASE_URL` / `AISR_SOCKET` / `AISR_TOKEN` from the
+env. Calling AISR from a Docker container (caller in container, daemon on host via
+`host.docker.internal` + token) is set up and verified — see [docker/](docker/README.md).
+**Not yet built:** Gemini provider, resident process pool, `cancel` endpoint. Module:
 `github.com/yuanyuexiang/aisr` (zero external deps; the SDK exposes its own public
 types, not internal ones). Git repo (branch `main`).
 

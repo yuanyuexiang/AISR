@@ -1,0 +1,11 @@
+# Build output / artifacts
+bin/
+*.test
+*.out
+
+# VCS / editor / OS
+.git/
+.DS_Store
+
+# Local state (never bake into an image)
+.aisr/

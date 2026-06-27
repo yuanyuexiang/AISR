@@ -1,0 +1,26 @@
+# Topology A — the caller runs in a container; the AISR daemon runs on the HOST
+# (reusing the host's logged-in claude / cursor, zero API key). See docker/README.md.
+#
+# 1) On the HOST, start the daemon on TCP with a token:
+#      export AISR_TOKEN=$(openssl rand -hex 16)
+#      ./bin/aisr serve --listen 0.0.0.0:7878
+#
+# 2) Run the containerized caller (same token), passing a prompt:
+#      AISR_TOKEN=$AISR_TOKEN docker compose -f docker/docker-compose.yml run --rm caller "用一句话回答:1+1等于几"
+#
+# The caller is the stdlib-only Python client, mounted from clients/python.
+
+services:
+  caller:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - ../clients/python:/app:ro
+    environment:
+      # The daemon is on the host; host.docker.internal resolves to it.
+      AISR_BASE_URL: "http://host.docker.internal:7878"
+      AISR_TOKEN: "${AISR_TOKEN:-}"
+    # Needed on Linux so host.docker.internal resolves; harmless on Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    entrypoint: ["python3", "example.py"]

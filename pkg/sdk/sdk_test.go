@@ -38,7 +38,7 @@ func newClient(t *testing.T) *sdk.Client {
 	}
 	reg := provider.NewRegistry(stubProvider{})
 	mgr := session.NewManager(store, reg.Resolve)
-	srv := api.NewServer(mgr, reg.List(), log.New(io.Discard, "", 0))
+	srv := api.NewServer(mgr, reg.List(), log.New(io.Discard, "", 0), "")
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return sdk.New(sdk.WithBaseURL(ts.URL))

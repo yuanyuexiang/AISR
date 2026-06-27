@@ -83,13 +83,15 @@ func (e *APIError) Error() string {
 
 // Client talks to the AISR daemon.
 type Client struct {
-	hc   *http.Client
-	base string
+	hc    *http.Client
+	base  string
+	token string
 }
 
 type config struct {
 	socket  string
 	baseURL string
+	token   string
 }
 
 // Option configures a Client.
@@ -102,18 +104,28 @@ func WithSocket(path string) Option { return func(c *config) { c.socket = path }
 // started with `aisr serve --listen`). Takes precedence over WithSocket.
 func WithBaseURL(rawURL string) Option { return func(c *config) { c.baseURL = rawURL } }
 
+// WithToken sets the bearer token sent on every request (required for TCP mode).
+func WithToken(token string) Option { return func(c *config) { c.token = token } }
+
 // New builds a Client. With no options it connects to ~/.aisr/aisr.sock.
+//
+// Environment defaults (overridden by explicit options): AISR_BASE_URL,
+// AISR_SOCKET, AISR_TOKEN — handy inside containers.
 //
 // No overall HTTP timeout is set so streaming turns aren't cut off; pass a
 // context with a deadline to bound a call.
 func New(opts ...Option) *Client {
-	var cfg config
+	cfg := config{
+		socket:  os.Getenv("AISR_SOCKET"),
+		baseURL: os.Getenv("AISR_BASE_URL"),
+		token:   os.Getenv("AISR_TOKEN"),
+	}
 	for _, o := range opts {
 		o(&cfg)
 	}
 
 	if cfg.baseURL != "" {
-		return &Client{hc: &http.Client{}, base: strings.TrimRight(cfg.baseURL, "/")}
+		return &Client{hc: &http.Client{}, base: strings.TrimRight(cfg.baseURL, "/"), token: cfg.token}
 	}
 
 	socketPath := cfg.socket
@@ -129,7 +141,13 @@ func New(opts ...Option) *Client {
 			},
 		},
 	}
-	return &Client{hc: hc, base: "http://unix"}
+	return &Client{hc: hc, base: "http://unix", token: cfg.token}
+}
+
+func (c *Client) auth(req *http.Request) {
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 }
 
 // Providers lists the daemon's providers and their capabilities.
@@ -216,6 +234,7 @@ func (c *Client) Send(ctx context.Context, session, prompt string, opt SendOptio
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.auth(req)
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -268,6 +287,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, out any)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	c.auth(req)
 
 	resp, err := c.hc.Do(req)
 	if err != nil {

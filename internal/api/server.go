@@ -6,11 +6,13 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/yuanyuexiang/aisr/internal/provider"
 	"github.com/yuanyuexiang/aisr/internal/session"
@@ -21,17 +23,21 @@ type Server struct {
 	mgr       *session.Manager
 	providers []provider.Provider
 	log       *log.Logger
+	token     string // if non-empty, a Bearer token is required (TCP mode)
 }
 
-// NewServer builds an API server. A nil logger defaults to log.Default().
-func NewServer(mgr *session.Manager, providers []provider.Provider, logger *log.Logger) *Server {
+// NewServer builds an API server. A nil logger defaults to log.Default(). When
+// token is non-empty, every request must carry "Authorization: Bearer <token>"
+// (used for TCP listeners; the Unix socket relies on file permissions instead).
+func NewServer(mgr *session.Manager, providers []provider.Provider, logger *log.Logger, token string) *Server {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Server{mgr: mgr, providers: providers, log: logger}
+	return &Server{mgr: mgr, providers: providers, log: logger, token: token}
 }
 
-// Handler returns the routed http.Handler (Go 1.22+ method+wildcard patterns).
+// Handler returns the routed http.Handler (Go 1.22+ method+wildcard patterns),
+// wrapped with bearer-token auth when a token is configured.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/providers", s.handleProviders)
@@ -40,7 +46,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{name}", s.handleGet)
 	mux.HandleFunc("DELETE /v1/sessions/{name}", s.handleDelete)
 	mux.HandleFunc("POST /v1/sessions/{name}/messages", s.handleMessages)
+	if s.token != "" {
+		return s.requireToken(mux)
+	}
 	return mux
+}
+
+// requireToken enforces "Authorization: Bearer <token>" (constant-time compare).
+func (s *Server) requireToken(next http.Handler) http.Handler {
+	want := []byte(s.token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || subtle.ConstantTimeCompare([]byte(got), want) != 1 {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid bearer token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // --- handlers ---

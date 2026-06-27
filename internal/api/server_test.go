@@ -40,7 +40,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	}
 	reg := provider.NewRegistry(stubProvider{})
 	mgr := session.NewManager(store, reg.Resolve)
-	srv := api.NewServer(mgr, reg.List(), log.New(io.Discard, "", 0))
+	srv := api.NewServer(mgr, reg.List(), log.New(io.Discard, "", 0), "")
 	return httptest.NewServer(srv.Handler())
 }
 
@@ -117,6 +117,41 @@ func TestGetNotFound(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "SESSION_NOT_FOUND") {
 		t.Errorf("body missing error code: %s", body)
+	}
+}
+
+func TestTokenAuth(t *testing.T) {
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := provider.NewRegistry(stubProvider{})
+	mgr := session.NewManager(store, reg.Resolve)
+	srv := api.NewServer(mgr, reg.List(), log.New(io.Discard, "", 0), "secret")
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	do := func(bearer string) int {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/providers", nil)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := do(""); got != http.StatusUnauthorized {
+		t.Errorf("no token: status = %d, want 401", got)
+	}
+	if got := do("wrong"); got != http.StatusUnauthorized {
+		t.Errorf("wrong token: status = %d, want 401", got)
+	}
+	if got := do("secret"); got != http.StatusOK {
+		t.Errorf("correct token: status = %d, want 200", got)
 	}
 }
 

@@ -309,8 +309,24 @@ func cmdSessionRemove(argv []string) int {
 func cmdServe(argv []string) int {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	socket := fs.String("socket", "", "unix socket path (default ~/.aisr/aisr.sock)")
-	listen := fs.String("listen", "", "TCP address, e.g. 127.0.0.1:7878 (overrides --socket)")
+	listen := fs.String("listen", "", "TCP address, e.g. 0.0.0.0:7878 (overrides --socket)")
+	token := fs.String("token", "", "bearer token required in TCP mode (or set AISR_TOKEN)")
 	_ = fs.Parse(argv)
+
+	// Auth: the Unix socket relies on file permissions, but a TCP listener is
+	// network-reachable, so it must require a bearer token (never expose unauthed).
+	tok := *token
+	if tok == "" {
+		tok = os.Getenv("AISR_TOKEN")
+	}
+	if *listen != "" && tok == "" {
+		fmt.Fprintln(os.Stderr, "aisr serve: TCP mode (--listen) requires a token; set --token or AISR_TOKEN")
+		fmt.Fprintln(os.Stderr, "  e.g.  AISR_TOKEN=$(openssl rand -hex 16) aisr serve --listen 0.0.0.0:7878")
+		return 2
+	}
+	if *listen == "" {
+		tok = "" // Unix socket: file perms suffice; ignore any token.
+	}
 
 	// Install the signal handler before binding, so a SIGTERM that arrives the
 	// instant the socket appears is caught (graceful shutdown), not fatal.
@@ -322,7 +338,7 @@ func cmdServe(argv []string) int {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
 	}
-	srv := api.NewServer(mgr, reg.List(), nil)
+	srv := api.NewServer(mgr, reg.List(), nil, tok)
 
 	ln, cleanup, err := listenFor(*listen, *socket)
 	if err != nil {

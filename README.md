@@ -181,7 +181,26 @@ curl --unix-socket ~/.aisr/aisr.sock -N -X POST \
 
 完整端点、事件模型与错误码见 **[docs/接口使用文档.md](docs/接口使用文档.md)**。
 
-> 计划中(尚未实现):`aisr chat`(交互式 REPL)、`cancel` 端点、TCP 鉴权 token。
+### 7. 在容器 / 跨网络调用(TCP + token)
+
+Unix socket 之外,daemon 也可监听 TCP 给其他机器 / 容器调用。**TCP 模式强制要
+bearer token**(网络可达,不能裸奔):
+
+```bash
+export AISR_TOKEN=$(openssl rand -hex 16)
+./bin/aisr serve --listen 0.0.0.0:7878            # 缺 token 会拒绝启动
+```
+
+客户端用环境变量 `AISR_BASE_URL` + `AISR_TOKEN` 即可(SDK / Python 都读):
+
+```bash
+curl -H "Authorization: Bearer $AISR_TOKEN" http://127.0.0.1:7878/v1/providers
+```
+
+**在 Docker 容器里调用 AISR**(调用方在容器、daemon 在宿主机,已实测):见
+**[docker/README.md](docker/README.md)** 与 [docker/docker-compose.yml](docker/docker-compose.yml)。
+
+> 计划中(尚未实现):`aisr chat`(交互式 REPL)、`cancel` 端点。
 
 ## 路线图
 

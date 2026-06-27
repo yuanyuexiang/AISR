@@ -1,13 +1,17 @@
 """Thin Python client for the AISR daemon (`aisr serve`).
 
-Stdlib only. Talks to the local Unix socket (default ~/.aisr/aisr.sock) over the
-/v1 HTTP API; streamed turns are yielded as Event objects (NDJSON).
+Stdlib only. Connects to the daemon over a Unix socket (default ~/.aisr/aisr.sock)
+or over TCP (base_url), and yields streamed turns as Event objects (NDJSON).
 
     from aisr import Client
-    c = Client()
+    c = Client()                                   # ~/.aisr/aisr.sock
+    # c = Client(base_url="http://host.docker.internal:7878", token="...")
     for ev in c.send("dev", "优化这个项目"):
         if ev.kind == "text":
             print(ev.text, end="", flush=True)
+
+Environment defaults (overridden by explicit args): AISR_BASE_URL, AISR_SOCKET,
+AISR_TOKEN — handy inside containers.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ import os
 import socket
 from dataclasses import dataclass
 from typing import Any, Iterator, Optional
+from urllib.parse import urlsplit
 
 
 class AISRError(Exception):
@@ -62,11 +67,27 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
 
 
 class Client:
-    """Client for a local AISR daemon."""
+    """Client for a local AISR daemon (Unix socket or TCP)."""
 
-    def __init__(self, socket_path: Optional[str] = None, timeout: Optional[float] = None):
-        self.socket_path = socket_path or os.path.expanduser("~/.aisr/aisr.sock")
+    def __init__(
+        self,
+        socket_path: Optional[str] = None,
+        base_url: Optional[str] = None,
+        token: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ):
+        base_url = base_url or os.environ.get("AISR_BASE_URL")
+        self.token = token or os.environ.get("AISR_TOKEN")
         self.timeout = timeout
+        if base_url:
+            parts = urlsplit(base_url)
+            self.base_url = base_url
+            self._host = parts.hostname
+            self._port = parts.port or 80
+            self.socket_path = None
+        else:
+            self.base_url = None
+            self.socket_path = socket_path or os.environ.get("AISR_SOCKET") or os.path.expanduser("~/.aisr/aisr.sock")
 
     # --- session management ---
 
@@ -111,12 +132,8 @@ class Client:
             body["model"] = model
 
         conn = self._conn()
-        conn.request(
-            "POST",
-            f"/v1/sessions/{name}/messages",
-            body=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
-        )
+        conn.request("POST", f"/v1/sessions/{name}/messages",
+                     body=json.dumps(body).encode(), headers=self._headers(json_body=True))
         resp = conn.getresponse()
         if resp.status >= 300:
             payload = resp.read()
@@ -134,15 +151,24 @@ class Client:
 
     # --- internal ---
 
-    def _conn(self) -> _UnixHTTPConnection:
+    def _conn(self) -> http.client.HTTPConnection:
+        if self.base_url:
+            return http.client.HTTPConnection(self._host, self._port, timeout=self.timeout)
         return _UnixHTTPConnection(self.socket_path, timeout=self.timeout)
+
+    def _headers(self, json_body: bool = False) -> dict[str, str]:
+        h: dict[str, str] = {}
+        if json_body:
+            h["Content-Type"] = "application/json"
+        if self.token:
+            h["Authorization"] = "Bearer " + self.token
+        return h
 
     def _request(self, method: str, path: str, body: Optional[dict] = None):
         conn = self._conn()
         data = json.dumps(body).encode() if body is not None else None
-        headers = {"Content-Type": "application/json"} if body is not None else {}
         try:
-            conn.request(method, path, body=data, headers=headers)
+            conn.request(method, path, body=data, headers=self._headers(json_body=body is not None))
             resp = conn.getresponse()
             payload = resp.read()
         finally:
