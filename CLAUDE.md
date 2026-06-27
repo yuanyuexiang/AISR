@@ -12,12 +12,15 @@ over it; the **Go SDK** ([pkg/sdk](pkg/sdk/sdk.go)) and the stdlib-only **Python
 client** ([clients/python/aisr.py](clients/python/aisr.py)) are clients of the daemon.
 Sessions persist under `~/.aisr/sessions` (one JSON each); `--session <name>` / `POST
 /v1/sessions/{name}/messages` resume by friendly name (lazy-create on first use).
-Verified against real `claude` (CLI 2.1.193): CLI, daemon, Go SDK, and Python client
-all do create → ask → resume → list → remove; daemon does graceful shutdown
-(SIGTERM → exit 0, socket unlinked). **Not yet built:** Cursor/Gemini providers, TCP
-auth/token, resident process pool. Module: `github.com/yuanyuexiang/aisr` (zero
-external deps; the SDK exposes its own public types, not internal ones). Git repo
-(branch `main`).
+**Providers: Claude (`claude`) and Cursor (`cursor-agent`) are both implemented**
+(structured stream-json, resume, zero-API-key via subscription/login). Verified
+against the real CLIs: CLI, daemon, Go SDK, and Python client all do create → ask →
+resume → list → remove for both providers; daemon does graceful shutdown (SIGTERM →
+exit 0, socket unlinked). Adding Cursor needed **zero** changes to CLI/daemon/SDK —
+only registering `cursor.New()` in the registry — confirming the abstraction holds.
+**Not yet built:** Gemini provider, TCP auth/token, resident process pool. Module:
+`github.com/yuanyuexiang/aisr` (zero external deps; the SDK exposes its own public
+types, not internal ones). Git repo (branch `main`).
 
 Build, test & run (also see [Makefile](Makefile): `make build|vet|test`):
 
@@ -35,8 +38,13 @@ PYTHONPATH=clients/python python3 clients/python/example.py "你好"  # Python c
 ```
 
 Notes for implementers:
-- `claude` parser logic lives in [internal/provider/claude/claude.go](internal/provider/claude/claude.go);
-  when its event mapping changes, update `claude_test.go`.
+- Each provider has its own parser + fixture test (claude and cursor share the
+  Anthropic-style content-block shape but differ — see below); when a provider's
+  event mapping changes, update its `*_test.go`.
+- **Cursor** ([internal/provider/cursor/cursor.go](internal/provider/cursor/cursor.go))
+  needs `--force` (clears the workspace-trust gate + allows tools in headless), and
+  **must ignore `{"type":"user"}`** events (Cursor echoes the prompt there, unlike
+  Claude where `user` is a tool result).
 - The daemon installs its signal handler **before** binding (avoids a startup race);
   keep it that way when editing `cmdServe`.
 - **Unix socket path length limit (~104 chars on macOS)**: `~/.aisr/aisr.sock` is

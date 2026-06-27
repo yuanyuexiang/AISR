@@ -24,6 +24,7 @@ import (
 	"github.com/yuanyuexiang/aisr/internal/api"
 	"github.com/yuanyuexiang/aisr/internal/provider"
 	"github.com/yuanyuexiang/aisr/internal/provider/claude"
+	"github.com/yuanyuexiang/aisr/internal/provider/cursor"
 	"github.com/yuanyuexiang/aisr/internal/session"
 	"github.com/yuanyuexiang/aisr/internal/storage"
 )
@@ -322,6 +323,6 @@ func buildManager() (*session.Manager, *provider.Registry, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	reg := provider.NewRegistry(claude.New())
+	reg := provider.NewRegistry(claude.New(), cursor.New())
 	return session.NewManager(store, reg.Resolve), reg, nil
 }

@@ -8,8 +8,8 @@
 > daemon **`aisr serve`**(Unix socket 上的 `/v1` HTTP API,NDJSON 流式)、
 > **Go SDK**([pkg/sdk](pkg/sdk/sdk.go))与 **Python 客户端**
 > ([clients/python](clients/python/))——均已对真实 claude 验证通过(含按名
-> resume、优雅退出)。尚未实现:Cursor/Gemini provider、`aisr chat`、TCP 鉴权、
-> 常驻进程池。上手见下方 **使用方法**。
+> resume、优雅退出)。**Provider:Claude + Cursor 均已接入**。尚未实现:Gemini
+> provider、`aisr chat`、TCP 鉴权、常驻进程池。上手见下方 **使用方法**。
 
 ---
 
@@ -56,8 +56,8 @@ AISR 复用它们登录好的凭据,在 headless 模式下统一驱动它们,把
 
 | Provider | 集成模式 | 状态 |
 |----------|---------|------|
-| Claude Code | structured(`-p --output-format stream-json --verbose`) | ✅ 已实现 |
-| Cursor CLI | 待验证(structured / pty) | spike 后加入 |
+| Claude Code (`claude`) | structured(`-p --output-format stream-json --verbose`) | ✅ 已实现 |
+| Cursor (`cursor-agent`) | structured(`-p --output-format stream-json --force`) | ✅ 已实现 |
 | Gemini CLI | 待验证(structured / pty) | spike 后加入 |
 
 > Codex CLI 暂不纳入。集成可行性以 [技术方案.md](技术方案.md) §十 的 spike 结论为准。
