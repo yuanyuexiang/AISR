@@ -5,10 +5,11 @@
 > 让其他本地程序通过统一接口调用大模型。
 
 > ⚠️ **状态:早期开发(pre-alpha)。** 已可运行:`aisr ask`、`aisr session` 管理、
-> 以及 **daemon `aisr serve`**(Unix socket 上的 `/v1` HTTP API,NDJSON 流式),
-> 均已对真实 claude 验证通过(含按名 resume、优雅退出)。
-> 尚未实现:Go SDK、Python 客户端、Cursor/Gemini provider、TCP 鉴权。
-> 下文 **快速开始** 中的 `chat` / SDK 仍为**目标接口**;当前能跑的见「现在能跑什么」。
+> daemon **`aisr serve`**(Unix socket 上的 `/v1` HTTP API,NDJSON 流式)、
+> **Go SDK**([pkg/sdk](pkg/sdk/sdk.go))与 **Python 客户端**
+> ([clients/python](clients/python/))——均已对真实 claude 验证通过(含按名
+> resume、优雅退出)。尚未实现:Cursor/Gemini provider、TCP 鉴权、常驻进程池。
+> 下文 **快速开始** 中的 `chat` 仍为**目标接口**;当前能跑的见「现在能跑什么」。
 
 ---
 
@@ -91,6 +92,15 @@ curl --unix-socket ~/.aisr/aisr.sock -N -X POST \
 ```
 
 端点与事件模型见 [docs/接口使用文档.md](docs/接口使用文档.md)。
+
+**Go SDK / Python 客户端**(daemon 在跑即可,几行代码接入):
+
+```bash
+go run ./examples/go -session demo "用一句话回答:1+1等于几"        # Go SDK
+PYTHONPATH=clients/python python3 clients/python/example.py "你好"  # Python
+```
+
+代码见 [pkg/sdk](pkg/sdk/sdk.go) 与 [clients/python](clients/python/)。
 
 ## 快速开始(目标接口,规划中)
 

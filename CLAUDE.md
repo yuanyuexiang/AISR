@@ -4,17 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Early development (pre-alpha) — CLI + persisted sessions + daemon (HTTP API).**
-Core orchestration lives in `session.Manager` (shared by CLI and daemon). The CLI
+**Early development (pre-alpha) — CLI + daemon + Go SDK + Python client.**
+Core orchestration lives in `session.Manager` (shared by every entry point). The CLI
 (`aisr ask`, `aisr session create|list|remove`) and the daemon (`aisr serve`,
-exposing the `/v1` HTTP API over a Unix socket with NDJSON streaming) are both thin
-layers over it. Sessions persist under `~/.aisr/sessions` (one JSON each); `--session
-<name>` / `POST /v1/sessions/{name}/messages` resume by friendly name (lazy-create on
-first use). Verified against real `claude` (CLI 2.1.193): CLI and daemon both do
-create → ask → resume → list → remove; daemon does graceful shutdown (SIGTERM → exit
-0, socket unlinked). **Not yet built:** Go SDK, Python client, Cursor/Gemini
-providers, TCP auth/token. Module: `github.com/yuanyuexiang/aisr` (zero external
-deps). Git repo (branch `main`).
+exposing the `/v1` HTTP API over a Unix socket with NDJSON streaming) are thin layers
+over it; the **Go SDK** ([pkg/sdk](pkg/sdk/sdk.go)) and the stdlib-only **Python
+client** ([clients/python/aisr.py](clients/python/aisr.py)) are clients of the daemon.
+Sessions persist under `~/.aisr/sessions` (one JSON each); `--session <name>` / `POST
+/v1/sessions/{name}/messages` resume by friendly name (lazy-create on first use).
+Verified against real `claude` (CLI 2.1.193): CLI, daemon, Go SDK, and Python client
+all do create → ask → resume → list → remove; daemon does graceful shutdown
+(SIGTERM → exit 0, socket unlinked). **Not yet built:** Cursor/Gemini providers, TCP
+auth/token, resident process pool. Module: `github.com/yuanyuexiang/aisr` (zero
+external deps; the SDK exposes its own public types, not internal ones). Git repo
+(branch `main`).
 
 Build, test & run (also see [Makefile](Makefile): `make build|vet|test`):
 
@@ -27,6 +30,8 @@ go vet ./... && go test ./...               # vet + unit tests (parser, manager,
 ./bin/aisr serve                            # daemon on ~/.aisr/aisr.sock
 curl --unix-socket ~/.aisr/aisr.sock -N -X POST \
   http://localhost/v1/sessions/dev/messages -d '{"prompt":"hi"}'   # NDJSON stream
+go run ./examples/go -session demo "你好"     # Go SDK example (needs daemon up)
+PYTHONPATH=clients/python python3 clients/python/example.py "你好"  # Python client
 ```
 
 Notes for implementers:
