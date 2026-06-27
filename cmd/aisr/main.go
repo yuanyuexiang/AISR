@@ -321,7 +321,7 @@ func cmdServe(argv []string) int {
 	}
 	if *listen != "" && tok == "" {
 		fmt.Fprintln(os.Stderr, "aisr serve: TCP mode (--listen) requires a token; set --token or AISR_TOKEN")
-		fmt.Fprintln(os.Stderr, "  e.g.  AISR_TOKEN=$(openssl rand -hex 16) aisr serve --listen 0.0.0.0:7878")
+		fmt.Fprintln(os.Stderr, "  e.g.  AISR_TOKEN=mysecret ./bin/aisr serve --listen 0.0.0.0:7878")
 		return 2
 	}
 	if *listen == "" {

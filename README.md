@@ -184,17 +184,16 @@ curl --unix-socket ~/.aisr/aisr.sock -N -X POST \
 ### 7. 在容器 / 跨网络调用(TCP + token)
 
 Unix socket 之外,daemon 也可监听 TCP 给其他机器 / 容器调用。**TCP 模式强制要
-bearer token**(网络可达,不能裸奔):
+bearer token**(网络可达,不能裸奔)。自己定一个值即可(生产换强随机值):
 
 ```bash
-export AISR_TOKEN=$(openssl rand -hex 16)
-./bin/aisr serve --listen 0.0.0.0:7878            # 缺 token 会拒绝启动
+AISR_TOKEN=123 ./bin/aisr serve --listen 0.0.0.0:7878    # 缺 token 会拒绝启动
 ```
 
-客户端用环境变量 `AISR_BASE_URL` + `AISR_TOKEN` 即可(SDK / Python 都读):
+客户端用环境变量 `AISR_BASE_URL` + `AISR_TOKEN`(SDK / Python 都读),或 curl 手带:
 
 ```bash
-curl -H "Authorization: Bearer $AISR_TOKEN" http://127.0.0.1:7878/v1/providers
+curl -H "Authorization: Bearer 123" http://127.0.0.1:7878/v1/providers
 ```
 
 **在 Docker 容器里调用 AISR**(调用方在容器、daemon 在宿主机,已实测):见
