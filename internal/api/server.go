@@ -70,7 +70,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Provider == "" {
-		req.Provider = "claude"
+		req.Provider = provider.DefaultName
 	}
 	rec, err := s.mgr.Create(req.Provider, req.Name, req.Workspace)
 	if err != nil {
@@ -131,7 +131,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Provider == "" {
-		req.Provider = "claude"
+		req.Provider = provider.DefaultName
 	}
 
 	turn, err := s.mgr.Ask(r.Context(), session.AskRequest{

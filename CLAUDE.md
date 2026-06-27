@@ -28,7 +28,8 @@ Build, test & run (also see [Makefile](Makefile): `make build|vet|test`):
 go build -o ./bin/aisr ./cmd/aisr           # build
 go vet ./... && go test ./...               # vet + unit tests (parser, manager, api)
 ./bin/aisr ask "你好"                        # ephemeral one-shot; session id -> stderr
-./bin/aisr session create --name dev --workspace ./demo
+./bin/aisr providers                         # list providers + capabilities
+./bin/aisr session create dev --workspace ./demo   # name is a positional arg
 ./bin/aisr ask --session dev "继续上文"       # resume by name; persists provider session
 ./bin/aisr serve                            # daemon on ~/.aisr/aisr.sock
 curl --unix-socket ~/.aisr/aisr.sock -N -X POST \

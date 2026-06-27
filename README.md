@@ -99,13 +99,20 @@ CLI 直连磁盘,自己在终端用很方便:
 ./bin/aisr ask "用一句话回答:1+1等于几"
 ./bin/aisr ask --json "你好"                       # 输出 NDJSON 事件流
 
-# 受管理的会话(按名字 resume,首次自动创建)
-./bin/aisr session create --name dev --workspace ./demo
+# 列出可用 provider 及能力
+./bin/aisr providers
+
+# 受管理的会话(会话名是位置参数;按名字 resume,首次自动创建)
+./bin/aisr session create dev --provider claude --workspace ./demo
 ./bin/aisr ask --session dev "记住数字 7"
 ./bin/aisr ask --session dev "我让你记的数字?"     # 自动接上上下文
+./bin/aisr session show dev
 ./bin/aisr session list
 ./bin/aisr session remove dev
 ```
+
+> 约定:会话名在 `session create/show/remove` 里都是**位置参数**;`ask` 用 `--session`
+> (因为位置参数留给 prompt)。`session create` 的 flags 要写在名字**前面**。
 
 ### 4. 用 Python 调用(daemon 需在跑)
 

@@ -1,8 +1,7 @@
 // Command aisr is the AISR CLI and daemon — both thin layers over session.Manager.
 //
-// Implemented: `aisr ask`, `aisr session create|list|remove`, and `aisr serve`
-// (the daemon exposing the /v1 HTTP API over a Unix socket). See 技术方案.md V1
-// and docs/接口使用文档.md.
+// Commands: ask, providers, session create|list|show|remove, serve. See
+// 技术方案.md V1 and docs/接口使用文档.md.
 package main
 
 import (
@@ -37,6 +36,8 @@ func main() {
 	switch os.Args[1] {
 	case "ask":
 		os.Exit(cmdAsk(os.Args[2:]))
+	case "providers":
+		os.Exit(cmdProviders(os.Args[2:]))
 	case "session":
 		os.Exit(cmdSession(os.Args[2:]))
 	case "serve":
@@ -54,12 +55,15 @@ func usage() {
 	fmt.Fprint(os.Stderr, `aisr — AI Session Runtime (pre-alpha)
 
 Usage:
-  aisr ask [flags] "<prompt>"      one-shot prompt (optionally within a session)
-  aisr session create [flags]      create a managed session
-  aisr session list                list managed sessions
-  aisr session remove <name>       delete a managed session
-  aisr serve [flags]               run the daemon (HTTP API over a Unix socket)
+  aisr ask [flags] "<prompt>"          one-shot prompt (optionally within a session)
+  aisr providers                       list providers and their capabilities
+  aisr session create [flags] [name]   create a managed session (name optional)
+  aisr session list                    list managed sessions
+  aisr session show <name>             show one session
+  aisr session remove <name>           delete a managed session
+  aisr serve [flags]                   run the daemon (HTTP API over a Unix socket)
 
+A session is named by a positional argument everywhere; "ask" uses --session.
 Run "aisr <command> -h" for flags.
 `)
 }
@@ -68,12 +72,15 @@ Run "aisr <command> -h" for flags.
 
 func cmdAsk(argv []string) int {
 	fs := flag.NewFlagSet("ask", flag.ExitOnError)
-	provName := fs.String("provider", "claude", "provider name (ignored if --session names an existing session)")
+	provName := fs.String("provider", provider.DefaultName, "provider for a new/ephemeral session")
 	sessName := fs.String("session", "", "managed session name (resumes context; lazily created if new)")
-	workspace := fs.String("workspace", "", "working directory")
-	model := fs.String("model", "", "model override (e.g. haiku, sonnet, opus)")
+	workspace := fs.String("workspace", "", "working directory (new sessions only)")
+	model := fs.String("model", "", "model override (provider-specific, e.g. claude: sonnet; cursor: gpt-5)")
 	jsonOut := fs.Bool("json", false, "emit normalized NDJSON events")
 	_ = fs.Parse(argv)
+
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
 	prompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if prompt == "" {
@@ -85,6 +92,15 @@ func cmdAsk(argv []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
+	}
+
+	// Warn if provider/workspace are given for an already-existing session, where
+	// they're ignored in favor of the stored record (avoids a silent footgun).
+	if *sessName != "" && (set["provider"] || set["workspace"]) {
+		if existing, err := mgr.Get(*sessName); err == nil {
+			fmt.Fprintf(os.Stderr, "aisr: note: session %q exists; --provider/--workspace ignored (provider=%s)\n",
+				*sessName, existing.Provider)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -104,11 +120,13 @@ func cmdAsk(argv []string) int {
 
 	enc := json.NewEncoder(os.Stdout)
 	exit := 0
+	sawText := false
 	for ev := range turn.Events {
 		switch {
 		case *jsonOut:
 			_ = enc.Encode(ev)
 		case ev.Kind == provider.EventText:
+			sawText = true
 			fmt.Print(ev.Text)
 		case ev.Kind == provider.EventToolUse:
 			fmt.Fprintf(os.Stderr, "\n[tool_use] %s\n", ev.Raw)
@@ -119,6 +137,9 @@ func cmdAsk(argv []string) int {
 	}
 	if !*jsonOut {
 		fmt.Println()
+		if !sawText && exit == 0 {
+			fmt.Fprintln(os.Stderr, "aisr: note: provider returned no text this turn")
+		}
 	}
 
 	// turn.Session / SaveErr are valid only now that the stream is drained.
@@ -129,17 +150,38 @@ func cmdAsk(argv []string) int {
 		if turn.Managed {
 			fmt.Fprintf(os.Stderr, "session: %s (%s)\n", s.Name, s.ProviderSession)
 		} else {
-			fmt.Fprintf(os.Stderr, "session: %s\n", s.ProviderSession)
+			fmt.Fprintf(os.Stderr, "provider session: %s (ephemeral; not resumable via --session)\n", s.ProviderSession)
 		}
 	}
 	return exit
+}
+
+// --- providers ---
+
+func cmdProviders(_ []string) int {
+	_, reg, err := buildManager()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "aisr:", err)
+		return 1
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tSTRUCTURED\tRESUME\tTOOLS\tMCP")
+	for _, p := range reg.List() {
+		c := p.Capabilities()
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.Name(), yn(c.StructuredOutput), yn(c.Resume), yn(c.ToolUse), yn(c.MCP))
+	}
+	if err := tw.Flush(); err != nil {
+		fmt.Fprintln(os.Stderr, "aisr:", err)
+		return 1
+	}
+	return 0
 }
 
 // --- session ---
 
 func cmdSession(argv []string) int {
 	if len(argv) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: aisr session <create|list|remove>")
+		fmt.Fprintln(os.Stderr, "usage: aisr session <create|list|show|remove>")
 		return 2
 	}
 	switch argv[0] {
@@ -147,6 +189,8 @@ func cmdSession(argv []string) int {
 		return cmdSessionCreate(argv[1:])
 	case "list", "ls":
 		return cmdSessionList(argv[1:])
+	case "show":
+		return cmdSessionShow(argv[1:])
 	case "remove", "rm":
 		return cmdSessionRemove(argv[1:])
 	default:
@@ -157,17 +201,17 @@ func cmdSession(argv []string) int {
 
 func cmdSessionCreate(argv []string) int {
 	fs := flag.NewFlagSet("session create", flag.ExitOnError)
-	provName := fs.String("provider", "claude", "provider name")
+	provName := fs.String("provider", provider.DefaultName, "provider name")
 	workspace := fs.String("workspace", "", "working directory")
-	name := fs.String("name", "", "session name (auto-generated if empty)")
 	_ = fs.Parse(argv)
+	name := fs.Arg(0) // optional positional; auto-generated if empty
 
 	mgr, _, err := buildManager()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
 	}
-	rec, err := mgr.Create(*provName, *name, *workspace)
+	rec, err := mgr.Create(*provName, name, *workspace)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
@@ -176,7 +220,7 @@ func cmdSessionCreate(argv []string) int {
 	return 0
 }
 
-func cmdSessionList(argv []string) int {
+func cmdSessionList(_ []string) int {
 	mgr, _, err := buildManager()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
@@ -194,20 +238,42 @@ func cmdSessionList(argv []string) int {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tPROVIDER\tWORKSPACE\tRESUMABLE\tUPDATED")
 	for _, r := range recs {
-		resumable := "no"
-		if r.ProviderSession != "" {
-			resumable = "yes"
-		}
-		ws := r.Workspace
-		if ws == "" {
-			ws = "-"
-		}
-		updated := "-"
-		if !r.UpdatedAt.IsZero() {
-			updated = r.UpdatedAt.Format("2006-01-02 15:04")
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.Name, r.Provider, ws, resumable, updated)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			r.Name, r.Provider, dash(r.Workspace), yn(r.ProviderSession != ""), updatedAt(r))
 	}
+	if err := tw.Flush(); err != nil {
+		fmt.Fprintln(os.Stderr, "aisr:", err)
+		return 1
+	}
+	return 0
+}
+
+func cmdSessionShow(argv []string) int {
+	if len(argv) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: aisr session show <name>")
+		return 2
+	}
+	mgr, _, err := buildManager()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "aisr:", err)
+		return 1
+	}
+	r, err := mgr.Get(argv[0])
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			fmt.Fprintf(os.Stderr, "aisr: no such session %q\n", argv[0])
+			return 1
+		}
+		fmt.Fprintln(os.Stderr, "aisr:", err)
+		return 1
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintf(tw, "Name:\t%s\n", r.Name)
+	fmt.Fprintf(tw, "Provider:\t%s\n", r.Provider)
+	fmt.Fprintf(tw, "Workspace:\t%s\n", dash(r.Workspace))
+	fmt.Fprintf(tw, "Provider session:\t%s\n", dash(r.ProviderSession))
+	fmt.Fprintf(tw, "Resumable:\t%s\n", yn(r.ProviderSession != ""))
+	fmt.Fprintf(tw, "Updated:\t%s\n", updatedAt(r))
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
@@ -310,7 +376,7 @@ func listenFor(tcpAddr, socketPath string) (net.Listener, func(), error) {
 	return ln, func() { _ = os.Remove(path) }, nil
 }
 
-// --- wiring ---
+// --- wiring & small helpers ---
 
 // buildManager constructs the shared Manager (over the default file store) and
 // the provider registry. The CLI and the daemon both build it this way.
@@ -325,4 +391,25 @@ func buildManager() (*session.Manager, *provider.Registry, error) {
 	}
 	reg := provider.NewRegistry(claude.New(), cursor.New())
 	return session.NewManager(store, reg.Resolve), reg, nil
+}
+
+func yn(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+func updatedAt(r *session.Session) string {
+	if r.UpdatedAt.IsZero() {
+		return "-"
+	}
+	return r.UpdatedAt.Format("2006-01-02 15:04")
 }

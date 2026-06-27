@@ -8,6 +8,9 @@ import (
 // ErrUnknown is returned when a provider name has no registered implementation.
 var ErrUnknown = errors.New("unknown provider")
 
+// DefaultName is the provider used when a request doesn't specify one.
+const DefaultName = "claude"
+
 // Registry maps provider names to implementations (the Router role). It serves
 // both as the session.Manager's resolver and as the daemon's provider listing.
 type Registry struct {

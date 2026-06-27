@@ -1,17 +1,15 @@
 // Package claude implements provider.Provider for Claude Code.
 //
 // It drives `claude -p --output-format stream-json --verbose [--resume <id>]`
-// and maps the NDJSON event stream onto the unified provider.Event model.
-// Event schema and the --verbose requirement are documented in 技术方案.md §十.
+// and maps the NDJSON event stream onto the unified provider.Event model. The
+// spawn/stream scaffolding lives in provider.StreamCommand; this file only builds
+// the command and parses Claude's lines. Event schema and the --verbose
+// requirement are documented in 技术方案.md §十.
 package claude
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
-	"os/exec"
 
 	"github.com/yuanyuexiang/aisr/internal/provider"
 )
@@ -45,49 +43,7 @@ func (p *Provider) Send(ctx context.Context, opts provider.SessionOpts, prompt s
 	if opts.SessionID != "" {
 		args = append(args, "--resume", opts.SessionID)
 	}
-
-	cmd := exec.CommandContext(ctx, p.bin, args...)
-	if opts.Workspace != "" {
-		cmd.Dir = opts.Workspace
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("claude: stdout pipe: %w", err)
-	}
-	// claude prints diagnostics to stdout as JSON; stderr carries hard failures.
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("claude: stderr pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("claude: start: %w", err)
-	}
-
-	ch := make(chan provider.Event)
-	turn := &provider.Turn{Events: ch}
-
-	go func() {
-		defer close(ch)
-
-		sc := bufio.NewScanner(stdout)
-		// stream-json lines (esp. the init event) can be large.
-		sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-		for sc.Scan() {
-			parseLine(sc.Bytes(), turn, ch)
-		}
-
-		errOut, _ := io.ReadAll(stderr)
-		waitErr := cmd.Wait()
-		if waitErr != nil {
-			msg := waitErr.Error()
-			if len(errOut) > 0 {
-				msg = string(errOut)
-			}
-			ch <- provider.Event{Kind: provider.EventError, Text: msg}
-		}
-	}()
-
-	return turn, nil
+	return provider.StreamCommand(ctx, p.bin, args, opts.Workspace, parseLine)
 }
 
 // --- stream-json parsing ---
@@ -101,11 +57,6 @@ type streamLine struct {
 	StopReason string          `json:"stop_reason"`
 	IsError    bool            `json:"is_error"`
 	Usage      json.RawMessage `json:"usage"`
-}
-
-type contentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
 }
 
 func parseLine(line []byte, turn *provider.Turn, ch chan<- provider.Event) {
@@ -122,7 +73,8 @@ func parseLine(line []byte, turn *provider.Turn, ch chan<- provider.Event) {
 		}
 
 	case "assistant", "user":
-		emitContent(ev.Message, ch)
+		// For Claude, "user" carries tool results; both are content arrays.
+		provider.EmitContent(ev.Message, ch)
 
 	case "result":
 		if ev.SessionID != "" {
@@ -139,33 +91,6 @@ func parseLine(line []byte, turn *provider.Turn, ch chan<- provider.Event) {
 
 	default:
 		// rate_limit_event and any future types: ignore for forward-compat.
-	}
-}
-
-// emitContent fans a message's content blocks out into typed events.
-func emitContent(message json.RawMessage, ch chan<- provider.Event) {
-	if len(message) == 0 {
-		return
-	}
-	var msg struct {
-		Content []json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(message, &msg); err != nil {
-		return
-	}
-	for _, b := range msg.Content {
-		var cb contentBlock
-		if err := json.Unmarshal(b, &cb); err != nil {
-			continue
-		}
-		switch cb.Type {
-		case "text":
-			ch <- provider.Event{Kind: provider.EventText, Text: cb.Text}
-		case "tool_use":
-			ch <- provider.Event{Kind: provider.EventToolUse, Raw: b}
-		case "tool_result":
-			ch <- provider.Event{Kind: provider.EventToolResult, Raw: b}
-		}
 	}
 }
 
