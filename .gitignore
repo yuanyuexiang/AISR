@@ -1,0 +1,9 @@
+# Build output
+/bin/
+
+# Go test/build artifacts
+*.test
+*.out
+
+# Editor / OS
+.DS_Store
