@@ -199,6 +199,13 @@ curl -H "Authorization: Bearer 123" http://127.0.0.1:7878/v1/providers
 **在 Docker 容器里调用 AISR**(调用方在容器、daemon 在宿主机,已实测):见
 **[docker/README.md](docker/README.md)** 与 [docker/docker-compose.yml](docker/docker-compose.yml)。
 
+### 8. Windows
+
+代码已交叉编译验证。原生 Windows 上请**优先用 TCP**(Python 客户端连不了 unix
+socket);provider 命令名可用 `AISR_CLAUDE_BIN` / `AISR_CURSOR_BIN` 覆盖(如
+`claude.cmd`)。完整步骤(PowerShell、构建 `aisr.exe`、Docker)见
+**[docs/windows.md](docs/windows.md)**。WSL2 里则与 Linux 用法相同。
+
 > 计划中(尚未实现):`aisr chat`(交互式 REPL)、`cancel` 端点。
 
 ## 路线图

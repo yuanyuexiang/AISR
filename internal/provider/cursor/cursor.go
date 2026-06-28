@@ -19,6 +19,7 @@ package cursor
 import (
 	"context"
 	"encoding/json"
+	"os"
 
 	"github.com/yuanyuexiang/aisr/internal/provider"
 )
@@ -28,8 +29,15 @@ type Provider struct {
 	bin string
 }
 
-// New returns a CursorProvider using `cursor-agent` from PATH.
-func New() *Provider { return &Provider{bin: "cursor-agent"} }
+// New returns a CursorProvider. The binary is `cursor-agent` from PATH by
+// default; override with AISR_CURSOR_BIN (e.g. `cursor-agent.cmd` on Windows).
+func New() *Provider {
+	bin := os.Getenv("AISR_CURSOR_BIN")
+	if bin == "" {
+		bin = "cursor-agent"
+	}
+	return &Provider{bin: bin}
+}
 
 func (p *Provider) Name() string { return "cursor" }
 

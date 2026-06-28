@@ -68,6 +68,16 @@ func TestUserEchoIgnored(t *testing.T) {
 	}
 }
 
+func TestNewRespectsBinEnv(t *testing.T) {
+	if New().bin != "cursor-agent" {
+		t.Errorf("default bin = %q, want cursor-agent", New().bin)
+	}
+	t.Setenv("AISR_CURSOR_BIN", "cursor-agent.cmd")
+	if New().bin != "cursor-agent.cmd" {
+		t.Errorf("override bin = %q, want cursor-agent.cmd", New().bin)
+	}
+}
+
 func TestParseToolUse(t *testing.T) {
 	lines := []string{
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"looking"},{"type":"tool_use","name":"read_file","input":{"path":"x"}}]}}`,

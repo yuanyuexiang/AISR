@@ -90,6 +90,16 @@ func TestParseResultError(t *testing.T) {
 	}
 }
 
+func TestNewRespectsBinEnv(t *testing.T) {
+	if New().bin != "claude" {
+		t.Errorf("default bin = %q, want claude", New().bin)
+	}
+	t.Setenv("AISR_CLAUDE_BIN", "claude.cmd")
+	if New().bin != "claude.cmd" {
+		t.Errorf("override bin = %q, want claude.cmd", New().bin)
+	}
+}
+
 func TestUnknownAndMalformedIgnored(t *testing.T) {
 	lines := []string{
 		`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}`,

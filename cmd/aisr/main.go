@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -380,8 +381,11 @@ func listenFor(tcpAddr, socketPath string) (net.Listener, func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, nil, err
 	}
-	// Clean up a stale socket left by a previous unclean exit.
-	if fi, err := os.Stat(path); err == nil && fi.Mode()&os.ModeSocket != 0 {
+	// Clean up a stale socket left by a previous unclean exit. On Windows an
+	// AF_UNIX socket file may not report ModeSocket, so also remove a non-dir
+	// file at the (our) socket path there.
+	if fi, err := os.Stat(path); err == nil && !fi.IsDir() &&
+		(fi.Mode()&os.ModeSocket != 0 || runtime.GOOS == "windows") {
 		_ = os.Remove(path)
 	}
 	ln, err := net.Listen("unix", path)

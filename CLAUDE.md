@@ -55,6 +55,11 @@ Notes for implementers:
   keep it that way when editing `cmdServe`.
 - **Unix socket path length limit (~104 chars on macOS)**: `~/.aisr/aisr.sock` is
   fine, but a long custom `--socket` path fails with `bind: invalid argument`.
+- **Windows**: code cross-compiles (amd64/arm64). Provider binary names are
+  overridable via `AISR_CLAUDE_BIN` / `AISR_CURSOR_BIN` (e.g. `claude.cmd`). Native
+  Windows should use **TCP** — Python's `socket.AF_UNIX` is typically absent there
+  (the client raises a clear error). WSL2 behaves like Linux. See
+  [docs/windows.md](docs/windows.md).
 
 Treat [技术方案.md](技术方案.md) as the source of truth for design decisions; this
 file summarizes it for quick orientation. If the spec and an instruction conflict,

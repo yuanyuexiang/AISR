@@ -1,3 +1,5 @@
+# Unix Makefile (macOS/Linux/WSL2). Native Windows has no `make` — build with
+# `go build -o bin\aisr.exe ./cmd/aisr` instead; see docs/windows.md.
 BIN := bin/aisr
 
 .PHONY: build vet test run clean

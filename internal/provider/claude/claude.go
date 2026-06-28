@@ -10,6 +10,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"os"
 
 	"github.com/yuanyuexiang/aisr/internal/provider"
 )
@@ -19,8 +20,15 @@ type Provider struct {
 	bin string
 }
 
-// New returns a ClaudeProvider using `claude` from PATH.
-func New() *Provider { return &Provider{bin: "claude"} }
+// New returns a ClaudeProvider. The binary is `claude` from PATH by default;
+// override with AISR_CLAUDE_BIN (e.g. `claude.cmd` or a full path on Windows).
+func New() *Provider {
+	bin := os.Getenv("AISR_CLAUDE_BIN")
+	if bin == "" {
+		bin = "claude"
+	}
+	return &Provider{bin: bin}
+}
 
 func (p *Provider) Name() string { return "claude" }
 

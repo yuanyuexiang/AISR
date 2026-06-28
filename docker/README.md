@@ -7,6 +7,10 @@
 > 为什么走 TCP 而不是挂载 Unix socket?在 **macOS / Docker Desktop** 上,宿主进程在
 > macOS、容器在 Linux VM 里,把宿主的 Unix socket 挂进容器**连不通**。TCP +
 > `host.docker.internal` 是可靠路径。(纯 Linux 宿主可以挂 socket,见末尾。)
+>
+> **Windows(Docker Desktop)** 同理:用 TCP,PowerShell 里把下面的
+> `AISR_TOKEN=123 ...` 换成先 `$env:AISR_TOKEN="123"` 再执行命令。详见
+> [../docs/windows.md](../docs/windows.md)。
 
 ## 安全前提:TCP 必须带 token
 

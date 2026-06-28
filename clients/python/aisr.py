@@ -86,6 +86,13 @@ class Client:
             self._port = parts.port or 80
             self.socket_path = None
         else:
+            if not hasattr(socket, "AF_UNIX"):
+                raise RuntimeError(
+                    "Unix domain sockets are unavailable on this platform "
+                    "(e.g. native Windows Python). Use TCP instead, e.g. "
+                    "Client(base_url='http://host.docker.internal:7878', token=...) "
+                    "or set AISR_BASE_URL / AISR_TOKEN."
+                )
             self.base_url = None
             self.socket_path = socket_path or os.environ.get("AISR_SOCKET") or os.path.expanduser("~/.aisr/aisr.sock")
 
