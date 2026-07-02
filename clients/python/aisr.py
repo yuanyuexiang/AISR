@@ -121,6 +121,11 @@ class Client:
 
     # --- chat ---
 
+    def cancel(self, name: str) -> None:
+        """Abort the in-flight turn for `name`. Raises AISRError (code
+        NO_ACTIVE_TURN) if nothing is currently running for that session."""
+        self._request("POST", f"/v1/sessions/{name}/cancel")
+
     def send(
         self,
         name: str,
@@ -128,15 +133,23 @@ class Client:
         provider: str = "claude",
         workspace: str = "",
         model: str = "",
+        agent: Optional[dict] = None,
     ) -> Iterator[Event]:
-        """Run one turn against `name` (lazily created); yields Event objects."""
-        body: dict[str, str] = {"prompt": prompt}
+        """Run one turn against `name` (lazily created); yields Event objects.
+
+        Pass ``agent`` (a dict, claude only) to drive an autonomous tool-using
+        turn: {"append_system_prompt", "allowed_tools", "disallowed_tools",
+        "mcp_config", "add_dirs", "max_turns", "permission_mode"}.
+        """
+        body: dict[str, Any] = {"prompt": prompt}
         if provider:
             body["provider"] = provider
         if workspace:
             body["workspace"] = workspace
         if model:
             body["model"] = model
+        if agent:
+            body["agent"] = agent
 
         conn = self._conn()
         conn.request("POST", f"/v1/sessions/{name}/messages",

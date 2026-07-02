@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strconv"
 
 	"github.com/yuanyuexiang/aisr/internal/provider"
 )
@@ -38,12 +39,38 @@ func (p *Provider) Capabilities() provider.Capabilities {
 		Streaming:        true,
 		Resume:           true,
 		ToolUse:          true,
-		MCP:              false,
+		MCP:              true, // honors SessionOpts.Agent.MCPConfig via --mcp-config
 	}
 }
 
 // Send spawns one headless claude turn and streams normalized events.
 func (p *Provider) Send(ctx context.Context, opts provider.SessionOpts, prompt string) (*provider.Turn, error) {
+	var env []string
+	if opts.Agent != nil {
+		env = envSlice(opts.Agent.Env)
+	}
+	return provider.StreamCommand(ctx, p.bin, buildArgs(opts, prompt), opts.Workspace, env, parseLine)
+}
+
+// envSlice flattens an env map into "K=V" entries (nil for an empty map).
+func envSlice(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k, v := range m {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
+// buildArgs assembles the claude argv for one headless turn, including any
+// agent-mode flags. Pure (no I/O) so it is unit-tested directly.
+//
+// Variadic flags (--allowedTools / --disallowedTools / --add-dir) take all their
+// values after a single flag token; the CLI stops consuming at the next "--flag".
+// --mcp-config accepts inline JSON as a string (not only a file path).
+func buildArgs(opts provider.SessionOpts, prompt string) []string {
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
@@ -51,7 +78,38 @@ func (p *Provider) Send(ctx context.Context, opts provider.SessionOpts, prompt s
 	if opts.SessionID != "" {
 		args = append(args, "--resume", opts.SessionID)
 	}
-	return provider.StreamCommand(ctx, p.bin, args, opts.Workspace, parseLine)
+	a := opts.Agent
+	if a == nil {
+		return args
+	}
+	if a.SystemPrompt != "" {
+		args = append(args, "--system-prompt", a.SystemPrompt)
+	}
+	if a.AppendSystemPrompt != "" {
+		args = append(args, "--append-system-prompt", a.AppendSystemPrompt)
+	}
+	if a.MaxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(a.MaxTurns))
+	}
+	if a.PermissionMode != "" {
+		args = append(args, "--permission-mode", a.PermissionMode)
+	}
+	if len(a.MCPConfig) > 0 {
+		args = append(args, "--mcp-config", string(a.MCPConfig))
+	}
+	if len(a.AllowedTools) > 0 {
+		args = append(args, "--allowedTools")
+		args = append(args, a.AllowedTools...)
+	}
+	if len(a.DisallowedTools) > 0 {
+		args = append(args, "--disallowedTools")
+		args = append(args, a.DisallowedTools...)
+	}
+	if len(a.AddDirs) > 0 {
+		args = append(args, "--add-dir")
+		args = append(args, a.AddDirs...)
+	}
+	return args
 }
 
 // --- stream-json parsing ---

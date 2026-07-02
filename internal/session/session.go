@@ -23,6 +23,7 @@ var (
 	ErrExists           = errors.New("session already exists")
 	ErrInvalidName      = errors.New("invalid session name")
 	ErrWorkspaceInvalid = errors.New("invalid workspace")
+	ErrNoActiveTurn     = errors.New("no active turn to cancel")
 )
 
 // Session is one managed conversation, persisted as JSON by a Store.

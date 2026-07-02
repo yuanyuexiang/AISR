@@ -1,10 +1,21 @@
 package cursor
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/yuanyuexiang/aisr/internal/provider"
 )
+
+func decodeRaw(t *testing.T, raw json.RawMessage) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	return m
+}
 
 func collect(lines []string) (*provider.Turn, []provider.Event) {
 	ch := make(chan provider.Event, 64)
@@ -102,5 +113,65 @@ func TestParseResultError(t *testing.T) {
 	}
 	if evs[0].Text != "boom" {
 		t.Errorf("error text = %q, want boom", evs[0].Text)
+	}
+}
+
+// Cursor's real tool calls: separate tool_call events (not content blocks),
+// started → tool_use, completed → tool_result. MCP calls get mcp__<prov>__<tool>.
+func TestParseMCPToolCall(t *testing.T) {
+	lines := []string{
+		`{"type":"tool_call","subtype":"started","call_id":"t1","tool_call":{"mcpToolCall":{"args":{"providerIdentifier":"falconry","toolName":"get_section","args":{"report_key":"r"}}}}}`,
+		`{"type":"tool_call","subtype":"completed","call_id":"t1","tool_call":{"mcpToolCall":{"args":{"providerIdentifier":"falconry","toolName":"get_section"},"result":{"success":{"content":[{"text":{"text":"RESULTTEXT"}}],"isError":false}}}}}`,
+	}
+	_, evs := collect(lines)
+	if got := kinds(evs); len(got) != 2 || got[0] != provider.EventToolUse || got[1] != provider.EventToolResult {
+		t.Fatalf("kinds = %v, want [tool_use tool_result]", got)
+	}
+	use := decodeRaw(t, evs[0].Raw)
+	if use["name"] != "mcp__falconry__get_section" {
+		t.Errorf("tool name = %v, want mcp__falconry__get_section", use["name"])
+	}
+	if use["id"] != "t1" {
+		t.Errorf("tool id = %v, want t1", use["id"])
+	}
+	res := decodeRaw(t, evs[1].Raw)
+	if res["tool_use_id"] != "t1" || res["content"] != "RESULTTEXT" || res["is_error"] != false {
+		t.Errorf("tool_result = %v", res)
+	}
+}
+
+// Built-in tools (read/glob/shell/…) → generic tool_use named by the tool kind.
+func TestParseBuiltinToolCall(t *testing.T) {
+	lines := []string{
+		`{"type":"tool_call","subtype":"started","call_id":"r1","tool_call":{"readToolCall":{"args":{"path":"/x"}}}}`,
+	}
+	_, evs := collect(lines)
+	if got := kinds(evs); len(got) != 1 || got[0] != provider.EventToolUse {
+		t.Fatalf("kinds = %v, want [tool_use]", got)
+	}
+	if use := decodeRaw(t, evs[0].Raw); use["name"] != "read" {
+		t.Errorf("builtin name = %v, want read", use["name"])
+	}
+}
+
+func TestBuildArgsAgentFlags(t *testing.T) {
+	args := buildArgs(provider.SessionOpts{Agent: &provider.AgentOptions{}}, "hi", "/ws")
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-p hi", "--force", "--approve-mcps", "--trust", "--workspace /ws"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("args missing %q: %v", want, args)
+		}
+	}
+	// No agent → none of the agent flags.
+	plain := strings.Join(buildArgs(provider.SessionOpts{}, "hi", ""), " ")
+	if strings.Contains(plain, "--approve-mcps") || strings.Contains(plain, "--trust") {
+		t.Errorf("plain args should have no agent flags: %v", plain)
+	}
+}
+
+func TestPrependSystemPrompt(t *testing.T) {
+	out := prependSystemPrompt(&provider.AgentOptions{AppendSystemPrompt: "PERSONA"}, "do it")
+	if !strings.HasPrefix(out, "PERSONA") || !strings.HasSuffix(out, "do it") {
+		t.Errorf("prepend = %q", out)
 	}
 }

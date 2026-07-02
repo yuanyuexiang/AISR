@@ -102,6 +102,21 @@ func TestMessagesStreamAndPersist(t *testing.T) {
 	}
 }
 
+func TestCancelNoActiveTurn(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/v1/sessions/dev/cancel", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("cancel status = %d, want 409", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(b), "NO_ACTIVE_TURN") {
+		t.Errorf("body missing NO_ACTIVE_TURN: %s", b)
+	}
+}
+
 func TestGetNotFound(t *testing.T) {
 	ts := newTestServer(t)
 	defer ts.Close()

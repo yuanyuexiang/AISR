@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{name}", s.handleGet)
 	mux.HandleFunc("DELETE /v1/sessions/{name}", s.handleDelete)
 	mux.HandleFunc("POST /v1/sessions/{name}/messages", s.handleMessages)
+	mux.HandleFunc("POST /v1/sessions/{name}/cancel", s.handleCancel)
 	if s.token != "" {
 		return s.requireToken(mux)
 	}
@@ -139,10 +140,11 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var req struct {
-		Prompt    string `json:"prompt"`
-		Provider  string `json:"provider"`
-		Workspace string `json:"workspace"`
-		Model     string `json:"model"`
+		Prompt    string                 `json:"prompt"`
+		Provider  string                 `json:"provider"`
+		Workspace string                 `json:"workspace"`
+		Model     string                 `json:"model"`
+		Agent     *provider.AgentOptions `json:"agent"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
@@ -162,6 +164,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Workspace:   req.Workspace,
 		Model:       req.Model,
 		Prompt:      req.Prompt,
+		Agent:       req.Agent,
 	})
 	if err != nil {
 		// Pre-stream errors get a proper status; mid-stream errors arrive as
@@ -186,6 +189,15 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if turn.SaveErr != nil {
 		s.log.Printf("session %q: save failed: %v", name, turn.SaveErr)
 	}
+}
+
+func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
+	if err := s.mgr.Cancel(r.PathValue("name")); err != nil {
+		status, code := classify(err)
+		writeError(w, status, code, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- helpers ---
@@ -233,6 +245,8 @@ func classify(err error) (int, string) {
 		return http.StatusBadRequest, "INVALID_NAME"
 	case errors.Is(err, session.ErrWorkspaceInvalid):
 		return http.StatusBadRequest, "WORKSPACE_INVALID"
+	case errors.Is(err, session.ErrNoActiveTurn):
+		return http.StatusConflict, "NO_ACTIVE_TURN"
 	case errors.Is(err, provider.ErrUnknown):
 		return http.StatusBadRequest, "PROVIDER_NOT_FOUND"
 	default:

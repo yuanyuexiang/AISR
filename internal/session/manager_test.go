@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/yuanyuexiang/aisr/internal/provider"
 )
@@ -184,5 +185,109 @@ func TestAskRejectsInvalidName(t *testing.T) {
 	mgr := NewManager(newFakeStore(), resolverFor(&fakeProvider{}))
 	if _, err := mgr.Ask(context.Background(), AskRequest{SessionName: "bad/name", Prompt: "x"}); err == nil {
 		t.Error("expected error for invalid session name")
+	}
+}
+
+func TestAskPassesAgentOptions(t *testing.T) {
+	fp := &fakeProvider{events: []provider.Event{{Kind: provider.EventDone}}}
+	mgr := NewManager(newFakeStore(), resolverFor(fp))
+	agent := &provider.AgentOptions{AllowedTools: []string{"Read"}, MaxTurns: 5}
+
+	turn, err := mgr.Ask(context.Background(), AskRequest{SessionName: "dev", Provider: "fake", Prompt: "x", Agent: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(turn)
+	if fp.sawOpts.Agent != agent {
+		t.Errorf("provider did not receive the AgentOptions; saw %+v", fp.sawOpts.Agent)
+	}
+}
+
+func TestCancelNoActiveTurn(t *testing.T) {
+	mgr := NewManager(newFakeStore(), resolverFor(&fakeProvider{}))
+	if err := mgr.Cancel("dev"); !errors.Is(err, ErrNoActiveTurn) {
+		t.Errorf("cancel err = %v, want ErrNoActiveTurn", err)
+	}
+}
+
+// blockingProvider's turn stays open until its context is cancelled, so a
+// /cancel can be observed deterministically.
+type blockingProvider struct{ started chan struct{} }
+
+func (b *blockingProvider) Name() string                        { return "blocking" }
+func (b *blockingProvider) Capabilities() provider.Capabilities { return provider.Capabilities{} }
+func (b *blockingProvider) Send(ctx context.Context, _ provider.SessionOpts, _ string) (*provider.Turn, error) {
+	ch := make(chan provider.Event)
+	close(b.started)
+	go func() {
+		defer close(ch)
+		<-ctx.Done() // unblocks only when the turn's context is cancelled
+	}()
+	return &provider.Turn{Events: ch}, nil
+}
+
+// streamingProvider streams events forever until its context is cancelled, and
+// closes drained when its producer goroutine exits — so a test can assert the
+// manager doesn't leak it when the consumer stops reading.
+type streamingProvider struct{ drained chan struct{} }
+
+func (s *streamingProvider) Name() string                        { return "streaming" }
+func (s *streamingProvider) Capabilities() provider.Capabilities { return provider.Capabilities{} }
+func (s *streamingProvider) Send(ctx context.Context, _ provider.SessionOpts, _ string) (*provider.Turn, error) {
+	ch := make(chan provider.Event)
+	go func() {
+		defer close(ch)
+		defer close(s.drained)
+		for {
+			select {
+			case ch <- provider.Event{Kind: provider.EventText, Text: "x"}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return &provider.Turn{Events: ch}, nil
+}
+
+func TestForwardingStopsWhenConsumerLeaves(t *testing.T) {
+	sp := &streamingProvider{drained: make(chan struct{})}
+	mgr := NewManager(newFakeStore(), resolverFor(sp))
+
+	turn, err := mgr.Ask(context.Background(), AskRequest{SessionName: "dev", Provider: "streaming", Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-turn.Events // read one event, then stop reading (simulating a disconnect)
+
+	if err := mgr.Cancel("dev"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	// The provider's producer goroutine must exit (drained), not leak blocked on
+	// a send nobody is reading.
+	select {
+	case <-sp.drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider goroutine leaked: not drained after consumer left")
+	}
+}
+
+func TestCancelAbortsInFlightTurn(t *testing.T) {
+	bp := &blockingProvider{started: make(chan struct{})}
+	mgr := NewManager(newFakeStore(), resolverFor(bp))
+
+	turn, err := mgr.Ask(context.Background(), AskRequest{SessionName: "dev", Provider: "blocking", Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-bp.started // the turn is now in-flight and registered active
+
+	if err := mgr.Cancel("dev"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	drain(turn) // returns only if the cancel actually ended the turn
+
+	// active entry must be cleared after the turn ends.
+	if err := mgr.Cancel("dev"); !errors.Is(err, ErrNoActiveTurn) {
+		t.Errorf("post-completion cancel err = %v, want ErrNoActiveTurn", err)
 	}
 }

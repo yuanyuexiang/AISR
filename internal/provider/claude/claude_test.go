@@ -1,6 +1,8 @@
 package claude
 
 import (
+	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/yuanyuexiang/aisr/internal/provider"
@@ -97,6 +99,86 @@ func TestNewRespectsBinEnv(t *testing.T) {
 	t.Setenv("AISR_CLAUDE_BIN", "claude.cmd")
 	if New().bin != "claude.cmd" {
 		t.Errorf("override bin = %q, want claude.cmd", New().bin)
+	}
+}
+
+func TestParseThinking(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"let me think","signature":"sig"},{"type":"text","text":"answer"}]}}`,
+	}
+	_, evs := collect(lines)
+
+	want := []provider.EventKind{provider.EventThinking, provider.EventText}
+	if got := kinds(evs); len(got) != len(want) || got[0] != provider.EventThinking || got[1] != provider.EventText {
+		t.Fatalf("kinds = %v, want %v", got, want)
+	}
+	if evs[0].Text != "let me think" {
+		t.Errorf("thinking text = %q, want %q", evs[0].Text, "let me think")
+	}
+	if len(evs[0].Raw) == 0 {
+		t.Error("thinking event should preserve the raw block (signature)")
+	}
+}
+
+// after returns the token(s) following flag in args; n=1 for single-value flags,
+// n>1 for variadic flags. Fails the test if flag is absent.
+func after(t *testing.T, args []string, flag string, n int) []string {
+	t.Helper()
+	i := slices.Index(args, flag)
+	if i < 0 {
+		t.Fatalf("flag %q not in args %v", flag, args)
+	}
+	if i+1+n > len(args) {
+		t.Fatalf("flag %q has fewer than %d values in %v", flag, n, args)
+	}
+	return args[i+1 : i+1+n]
+}
+
+func TestBuildArgsNoAgent(t *testing.T) {
+	args := buildArgs(provider.SessionOpts{Model: "opus", SessionID: "s1"}, "hi")
+	want := []string{"-p", "hi", "--output-format", "stream-json", "--verbose", "--model", "opus", "--resume", "s1"}
+	if !slices.Equal(args, want) {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+}
+
+func TestBuildArgsAgentFlags(t *testing.T) {
+	args := buildArgs(provider.SessionOpts{
+		Agent: &provider.AgentOptions{
+			SystemPrompt:       "sysreplace",
+			AppendSystemPrompt: "persona",
+			AllowedTools:       []string{"Read", "mcp__auric__ask_user"},
+			DisallowedTools:    []string{"Bash"},
+			MCPConfig:          json.RawMessage(`{"mcpServers":{}}`),
+			AddDirs:            []string{"/deal", "/ip"},
+			MaxTurns:           7,
+			PermissionMode:     "bypassPermissions",
+		},
+	}, "hi")
+
+	if got := after(t, args, "--system-prompt", 1); got[0] != "sysreplace" {
+		t.Errorf("--system-prompt = %v, want [sysreplace]", got)
+	}
+	if got := after(t, args, "--append-system-prompt", 1); got[0] != "persona" {
+		t.Errorf("--append-system-prompt = %v, want [persona]", got)
+	}
+	if got := after(t, args, "--max-turns", 1); got[0] != "7" {
+		t.Errorf("--max-turns = %v, want [7]", got)
+	}
+	if got := after(t, args, "--permission-mode", 1); got[0] != "bypassPermissions" {
+		t.Errorf("--permission-mode = %v, want [bypassPermissions]", got)
+	}
+	if got := after(t, args, "--mcp-config", 1); got[0] != `{"mcpServers":{}}` {
+		t.Errorf("--mcp-config = %v", got)
+	}
+	if got := after(t, args, "--allowedTools", 2); !slices.Equal(got, []string{"Read", "mcp__auric__ask_user"}) {
+		t.Errorf("--allowedTools = %v", got)
+	}
+	if got := after(t, args, "--disallowedTools", 1); got[0] != "Bash" {
+		t.Errorf("--disallowedTools = %v, want [Bash]", got)
+	}
+	if got := after(t, args, "--add-dir", 2); !slices.Equal(got, []string{"/deal", "/ip"}) {
+		t.Errorf("--add-dir = %v", got)
 	}
 }
 

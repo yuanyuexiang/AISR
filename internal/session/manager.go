@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/yuanyuexiang/aisr/internal/provider"
@@ -21,11 +22,20 @@ type Manager struct {
 	store   Store
 	resolve ProviderResolver
 	now     func() time.Time
+
+	mu     sync.Mutex             // guards active
+	active map[string]*activeTurn // in-flight managed turns, by session name
+}
+
+// activeTurn is the cancel handle for one in-flight managed turn, so a separate
+// /cancel request can abort it.
+type activeTurn struct {
+	cancel context.CancelFunc
 }
 
 // NewManager wires a Manager to its store and provider resolver.
 func NewManager(store Store, resolve ProviderResolver) *Manager {
-	return &Manager{store: store, resolve: resolve, now: time.Now}
+	return &Manager{store: store, resolve: resolve, now: time.Now, active: map[string]*activeTurn{}}
 }
 
 // Create registers a new managed session (no provider process is started yet).
@@ -70,6 +80,9 @@ type AskRequest struct {
 	Workspace   string // for ephemeral or lazy-created sessions
 	Model       string // per-turn override; not persisted
 	Prompt      string
+	// Agent enables agent-mode controls (MCP, tool whitelist, add-dirs, …) for
+	// providers that support them; nil keeps plain prompt-in/text-out behavior.
+	Agent *provider.AgentOptions
 }
 
 // Turn is the Manager's handle for one in-flight exchange.
@@ -105,12 +118,27 @@ func (m *Manager) Ask(ctx context.Context, req AskRequest) (*Turn, error) {
 		return nil, err
 	}
 
-	pturn, err := prv.Send(ctx, provider.SessionOpts{
+	// Managed turns get a cancellable context registered under the session name
+	// so a separate /cancel request can abort the in-flight CLI process.
+	turnCtx := ctx
+	var cancel context.CancelFunc
+	var at *activeTurn
+	if managed {
+		turnCtx, cancel = context.WithCancel(ctx)
+		at = m.registerActive(rec.Name, cancel)
+	}
+
+	pturn, err := prv.Send(turnCtx, provider.SessionOpts{
 		SessionID: rec.ProviderSession,
 		Workspace: rec.Workspace,
 		Model:     req.Model,
+		Agent:     req.Agent,
 	}, req.Prompt)
 	if err != nil {
+		if at != nil {
+			m.clearActive(rec.Name, at)
+			cancel()
+		}
 		return nil, err
 	}
 
@@ -118,8 +146,21 @@ func (m *Manager) Ask(ctx context.Context, req AskRequest) (*Turn, error) {
 	turn := &Turn{Events: out, Session: rec, Managed: managed}
 	go func() {
 		defer close(out)
+		if at != nil {
+			defer cancel() // release the context once the turn ends
+			defer m.clearActive(rec.Name, at)
+		}
 		for ev := range pturn.Events {
-			out <- ev
+			select {
+			case out <- ev:
+			case <-turnCtx.Done():
+				// The consumer went away (client disconnect or /cancel). Stop
+				// forwarding, but drain the provider in the background so its
+				// goroutine exits and the CLI's pipes close — don't persist a
+				// partial turn.
+				go drainEvents(pturn.Events)
+				return
+			}
 		}
 		if pturn.SessionID != "" {
 			rec.ProviderSession = pturn.SessionID
@@ -130,6 +171,54 @@ func (m *Manager) Ask(ctx context.Context, req AskRequest) (*Turn, error) {
 		}
 	}()
 	return turn, nil
+}
+
+// drainEvents consumes the rest of a provider stream after the consumer has
+// gone away, so the provider's goroutine can finish (its send no longer blocks)
+// and close the channel instead of leaking.
+func drainEvents(ch <-chan provider.Event) {
+	for range ch { //nolint:revive // intentional drain
+	}
+}
+
+// Cancel aborts the in-flight turn for a managed session, killing its CLI
+// process. Returns ErrNoActiveTurn if nothing is running for that name.
+func (m *Manager) Cancel(name string) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	at := m.active[name]
+	m.mu.Unlock()
+	if at == nil {
+		return fmt.Errorf("%q: %w", name, ErrNoActiveTurn)
+	}
+	at.cancel()
+	return nil
+}
+
+// registerActive records the cancel handle for a session's in-flight turn,
+// cancelling any prior turn still registered under the same name, and returns
+// the handle so the caller can later clearActive exactly this turn.
+func (m *Manager) registerActive(name string, cancel context.CancelFunc) *activeTurn {
+	at := &activeTurn{cancel: cancel}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if prev := m.active[name]; prev != nil {
+		prev.cancel()
+	}
+	m.active[name] = at
+	return at
+}
+
+// clearActive removes the active entry for name, but only if it's still this
+// turn (pointer identity) — so a newer turn that replaced it isn't unregistered.
+func (m *Manager) clearActive(name string, at *activeTurn) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active[name] == at {
+		delete(m.active, name)
+	}
 }
 
 // resolveRecord loads (or lazily builds) the session record for a turn.

@@ -31,6 +31,7 @@ type EventKind string
 
 const (
 	EventText       EventKind = "text"
+	EventThinking   EventKind = "thinking"
 	EventToolUse    EventKind = "tool_use"
 	EventToolResult EventKind = "tool_result"
 	EventUsage      EventKind = "usage"
@@ -202,28 +203,53 @@ func (c *Client) RemoveSession(ctx context.Context, name string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/v1/sessions/"+url.PathEscape(name), nil, nil)
 }
 
+// Cancel aborts the in-flight turn for a session (kills its CLI process).
+// Returns an *APIError with code NO_ACTIVE_TURN if nothing is running.
+func (c *Client) Cancel(ctx context.Context, name string) error {
+	return c.doJSON(ctx, http.MethodPost, "/v1/sessions/"+url.PathEscape(name)+"/cancel", nil, nil)
+}
+
+// AgentOptions carries agent-mode controls for providers that support them
+// (Claude). Mirrors the daemon's agent block; all fields optional.
+type AgentOptions struct {
+	SystemPrompt       string            `json:"system_prompt,omitempty"`
+	AppendSystemPrompt string            `json:"append_system_prompt,omitempty"`
+	Env                map[string]string `json:"env,omitempty"`
+	AllowedTools       []string          `json:"allowed_tools,omitempty"`
+	DisallowedTools    []string          `json:"disallowed_tools,omitempty"`
+	MCPConfig          json.RawMessage   `json:"mcp_config,omitempty"`
+	AddDirs            []string          `json:"add_dirs,omitempty"`
+	MaxTurns           int               `json:"max_turns,omitempty"`
+	PermissionMode     string            `json:"permission_mode,omitempty"`
+}
+
 // SendOptions are optional per-turn settings.
 type SendOptions struct {
 	Provider  string // for ephemeral/lazy-created sessions (default "claude" server-side)
 	Workspace string
 	Model     string
+	// Agent, when non-nil, enables agent-mode controls (MCP, tool whitelist,
+	// add-dirs, system-prompt, …). Nil keeps plain prompt-in/text-out behavior.
+	Agent *AgentOptions
 }
 
 // Send runs one turn against the named session (lazily created if new) and
 // returns a channel of normalized events. Drain it to completion; the channel
 // closes when the turn ends (or the context is cancelled).
 func (c *Client) Send(ctx context.Context, session, prompt string, opt SendOptions) (<-chan Event, error) {
-	body := map[string]string{"prompt": prompt}
-	if opt.Provider != "" {
-		body["provider"] = opt.Provider
-	}
-	if opt.Workspace != "" {
-		body["workspace"] = opt.Workspace
-	}
-	if opt.Model != "" {
-		body["model"] = opt.Model
-	}
-	payload, err := json.Marshal(body)
+	payload, err := json.Marshal(struct {
+		Prompt    string        `json:"prompt"`
+		Provider  string        `json:"provider,omitempty"`
+		Workspace string        `json:"workspace,omitempty"`
+		Model     string        `json:"model,omitempty"`
+		Agent     *AgentOptions `json:"agent,omitempty"`
+	}{
+		Prompt:    prompt,
+		Provider:  opt.Provider,
+		Workspace: opt.Workspace,
+		Model:     opt.Model,
+		Agent:     opt.Agent,
+	})
 	if err != nil {
 		return nil, err
 	}

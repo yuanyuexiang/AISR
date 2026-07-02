@@ -23,9 +23,23 @@ bearer token** (`--token` / `AISR_TOKEN`); the Unix socket relies on file perms.
 Clients (Go SDK, Python) read `AISR_BASE_URL` / `AISR_SOCKET` / `AISR_TOKEN` from the
 env. Calling AISR from a Docker container (caller in container, daemon on host via
 `host.docker.internal` + token) is set up and verified — see [docker/](docker/README.md).
-**Not yet built:** Gemini provider, resident process pool, `cancel` endpoint. Module:
-`github.com/yuanyuexiang/aisr` (zero external deps; the SDK exposes its own public
-types, not internal ones). Git repo (branch `main`).
+**Agent mode (Claude + Cursor):** `messages` accepts an optional `agent` block
+that passes the autonomous-agent knobs to the CLI — `system_prompt` /
+`append_system_prompt`, `allowed_tools` / `disallowed_tools`, `mcp_config`
+(external MCP, inline JSON), `add_dirs`, `env`, `max_turns`, `permission_mode`.
+The tool whitelist is the real gate, so `bypassPermissions` isn't required.
+`cancel` is implemented (`POST /v1/sessions/{name}/cancel`). The event model has
+a `thinking` kind. These let an upper layer drive a full tool-using agent (e.g.
+inline ask_user via a blocking external MCP tool) — verified by spike for BOTH
+providers. **Cursor** honors the same block via a different mechanism (its knobs
+differ): the `mcp_config` is written to `<workspace>/.cursor/mcp.json` +
+`--approve-mcps`, the system prompt is prepended to the prompt (no flag), and
+`tool_call` events (mcpToolCall / readToolCall / …) are mapped to the unified
+tool_use/tool_result. Cursor drops `add_dirs` (single `--workspace`) and the
+tool whitelist (coarse `--force` gate). **Not yet built:** Gemini provider,
+resident process pool.
+Module: `github.com/yuanyuexiang/aisr` (zero external deps; the SDK exposes its
+own public types, not internal ones). Git repo (branch `main`).
 
 Build, test & run (also see [Makefile](Makefile): `make build|vet|test`):
 
