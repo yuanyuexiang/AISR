@@ -8,3 +8,7 @@
 
 # Editor / OS
 .DS_Store
+
+# Cross-compiled / packaged binaries (rebuild with `make windows`)
+/dist/
+/deploy/**/*.exe
