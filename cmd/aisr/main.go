@@ -10,6 +10,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -312,7 +314,16 @@ func cmdServe(argv []string) int {
 	socket := fs.String("socket", "", "unix socket path (default ~/.aisr/aisr.sock)")
 	listen := fs.String("listen", "", "TCP address, e.g. 0.0.0.0:7878 (overrides --socket)")
 	token := fs.String("token", "", "bearer token required in TCP mode (or set AISR_TOKEN)")
+	logFile := fs.String("log-file", "", "append logs to this file (or set AISR_LOG_FILE); default stderr")
+	logLevel := fs.String("log-level", "", "log level: info (default) or debug (or set AISR_LOG_LEVEL)")
 	_ = fs.Parse(argv)
+
+	// Logging: everything (access log, turns, warnings, errors) goes through the
+	// slog default logger set up here. --log-file lets a background/hidden daemon
+	// keep logs; --log-level debug adds per-turn CLI-spawn + stream-event detail.
+	if closeLog := setupLogging(*logFile, *logLevel); closeLog != nil {
+		defer closeLog()
+	}
 
 	// Auth: the Unix socket relies on file permissions, but a TCP listener is
 	// network-reachable, so it must require a bearer token (never expose unauthed).
@@ -339,7 +350,7 @@ func cmdServe(argv []string) int {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
 	}
-	srv := api.NewServer(mgr, reg.List(), nil, tok)
+	srv := api.NewServer(mgr, reg.List(), tok)
 
 	ln, cleanup, err := listenFor(*listen, *socket)
 	if err != nil {
@@ -356,12 +367,42 @@ func cmdServe(argv []string) int {
 		_ = httpSrv.Shutdown(shutCtx)
 	}()
 
-	fmt.Fprintf(os.Stderr, "aisr serve: listening on %s\n", ln.Addr())
+	slog.Info("serve: listening", "addr", ln.Addr().String())
 	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintln(os.Stderr, "aisr:", err)
 		return 1
 	}
 	return 0
+}
+
+// setupLogging points the slog default logger at a file (append) or stderr, at
+// info or debug level. Env vars AISR_LOG_FILE / AISR_LOG_LEVEL are fallbacks for
+// the flags. Returns a close func for the file (nil when logging to stderr).
+func setupLogging(file, level string) func() {
+	if file == "" {
+		file = os.Getenv("AISR_LOG_FILE")
+	}
+	if level == "" {
+		level = os.Getenv("AISR_LOG_LEVEL")
+	}
+	lvl := slog.LevelInfo
+	if strings.EqualFold(level, "debug") {
+		lvl = slog.LevelDebug
+	}
+	var out io.Writer = os.Stderr
+	var closeFn func()
+	if file != "" {
+		f, err := os.OpenFile(file, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			// Fall back to stderr rather than dropping logs silently.
+			fmt.Fprintf(os.Stderr, "aisr: cannot open log file %q: %v (logging to stderr)\n", file, err)
+		} else {
+			out = f
+			closeFn = func() { _ = f.Close() }
+		}
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: lvl})))
+	return closeFn
 }
 
 // listenFor opens a TCP or Unix listener and returns a cleanup func.

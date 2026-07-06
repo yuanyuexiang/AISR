@@ -76,7 +76,10 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-aisr.ps1
 
 - 守护进程随**登录**启动(不是开机就起 —— 它需要你的登录态)。锁屏不影响运行。
 - 崩溃会自动重启(计划任务设了 `RestartCount`)。
-- 想看日志排错:临时手动跑 `%LOCALAPPDATA%\AISR\run-aisr.ps1`,前台就能看到输出。
+- **日志**:守护进程隐藏窗口跑,日志落在 `%LOCALAPPDATA%\AISR\aisr.log`(启动行、
+  每个请求的 access log、每轮 turn 的 provider、失败原因)。实时看:
+  `Get-Content "$env:LOCALAPPDATA\AISR\aisr.log" -Wait -Tail 20`。想看更细(每轮拉起的
+  CLI + 事件流),重装时加 `-LogLevel debug`。日志是追加写、不自动轮转,长期跑偶尔手动清一下。
 - 调用报 `PROVIDER_UNAVAILABLE` = 那台机器的 `claude` / `cursor-agent` 没登录、
   或不在 PATH(见「前提」)。
 - 这是**本地个人 runtime**,不要包成对外多用户服务(订阅 ToS)。TCP 的 token

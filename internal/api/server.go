@@ -10,9 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/yuanyuexiang/aisr/internal/provider"
 	"github.com/yuanyuexiang/aisr/internal/session"
@@ -22,22 +23,19 @@ import (
 type Server struct {
 	mgr       *session.Manager
 	providers []provider.Provider
-	log       *log.Logger
 	token     string // if non-empty, a Bearer token is required (TCP mode)
 }
 
-// NewServer builds an API server. A nil logger defaults to log.Default(). When
-// token is non-empty, every request must carry "Authorization: Bearer <token>"
-// (used for TCP listeners; the Unix socket relies on file permissions instead).
-func NewServer(mgr *session.Manager, providers []provider.Provider, logger *log.Logger, token string) *Server {
-	if logger == nil {
-		logger = log.Default()
-	}
-	return &Server{mgr: mgr, providers: providers, log: logger, token: token}
+// NewServer builds an API server. When token is non-empty, every request must
+// carry "Authorization: Bearer <token>" (used for TCP listeners; the Unix socket
+// relies on file permissions instead). Logging uses the slog default logger,
+// configured by the daemon (see cmd/aisr setupLogging).
+func NewServer(mgr *session.Manager, providers []provider.Provider, token string) *Server {
+	return &Server{mgr: mgr, providers: providers, token: token}
 }
 
 // Handler returns the routed http.Handler (Go 1.22+ method+wildcard patterns),
-// wrapped with bearer-token auth when a token is configured.
+// wrapped with bearer-token auth when a token is configured, and an access log.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/providers", s.handleProviders)
@@ -47,10 +45,49 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/sessions/{name}", s.handleDelete)
 	mux.HandleFunc("POST /v1/sessions/{name}/messages", s.handleMessages)
 	mux.HandleFunc("POST /v1/sessions/{name}/cancel", s.handleCancel)
+	var h http.Handler = mux
 	if s.token != "" {
-		return s.requireToken(mux)
+		h = s.requireToken(h)
 	}
-	return mux
+	return logRequests(h)
+}
+
+// logRequests is an access-log middleware: one info line per request with method,
+// path, status, and duration (for a streaming /messages turn, the duration is the
+// whole turn). Outermost so even 401s are logged.
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		slog.Info("request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", sw.status,
+			"dur", time.Since(start).Round(time.Millisecond).String())
+	})
+}
+
+// statusWriter captures the response status and forwards Flush so NDJSON
+// streaming (handleMessages) still flushes through the middleware wrapper.
+type statusWriter struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if !w.wroteHeader {
+		w.status = code
+		w.wroteHeader = true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // requireToken enforces "Authorization: Bearer <token>" (constant-time compare).
@@ -158,6 +195,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		req.Provider = provider.DefaultName
 	}
 
+	slog.Info("turn", "session", name, "provider", req.Provider, "agent", req.Agent != nil)
+
 	turn, err := s.mgr.Ask(r.Context(), session.AskRequest{
 		SessionName: name,
 		Provider:    req.Provider,
@@ -170,6 +209,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// Pre-stream errors get a proper status; mid-stream errors arrive as
 		// `error` events once streaming has begun.
 		status, code := classify(err)
+		slog.Warn("turn failed", "session", name, "provider", req.Provider, "code", code, "err", err.Error())
 		writeError(w, status, code, err.Error())
 		return
 	}
@@ -179,6 +219,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	flusher, _ := w.(http.Flusher)
 	enc := json.NewEncoder(w)
 	for ev := range turn.Events {
+		slog.Debug("event", "session", name, "kind", string(ev.Kind))
 		if err := enc.Encode(ev); err != nil {
 			break // client disconnected
 		}
@@ -187,7 +228,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if turn.SaveErr != nil {
-		s.log.Printf("session %q: save failed: %v", name, turn.SaveErr)
+		slog.Error("session save failed", "session", name, "err", turn.SaveErr.Error())
 	}
 }
 

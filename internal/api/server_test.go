@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,7 +39,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	}
 	reg := provider.NewRegistry(stubProvider{})
 	mgr := session.NewManager(store, reg.Resolve)
-	srv := api.NewServer(mgr, reg.List(), log.New(io.Discard, "", 0), "")
+	srv := api.NewServer(mgr, reg.List(), "")
 	return httptest.NewServer(srv.Handler())
 }
 
@@ -142,7 +141,7 @@ func TestTokenAuth(t *testing.T) {
 	}
 	reg := provider.NewRegistry(stubProvider{})
 	mgr := session.NewManager(store, reg.Resolve)
-	srv := api.NewServer(mgr, reg.List(), log.New(io.Discard, "", 0), "secret")
+	srv := api.NewServer(mgr, reg.List(), "secret")
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

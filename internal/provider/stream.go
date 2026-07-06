@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // ParseFunc maps one raw NDJSON line from a provider's stdout into events,
@@ -40,6 +42,7 @@ func StreamCommand(ctx context.Context, bin string, args []string, workspace str
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%s: start: %w", bin, err)
 	}
+	slog.Debug("spawn cli", "bin", bin, "cwd", workspace, "argv", capArgs(args))
 
 	ch := make(chan Event)
 	turn := &Turn{Events: ch}
@@ -66,6 +69,24 @@ func StreamCommand(ctx context.Context, bin string, args []string, workspace str
 		}
 	}()
 	return turn, nil
+}
+
+// capArgs joins argv for a debug log line, truncating so a huge system prompt or
+// user prompt doesn't flood the log. Individual args are capped too.
+func capArgs(args []string) string {
+	const perArg, total = 120, 600
+	parts := make([]string, len(args))
+	for i, a := range args {
+		if len(a) > perArg {
+			a = a[:perArg] + "…"
+		}
+		parts[i] = a
+	}
+	s := strings.Join(parts, " ")
+	if len(s) > total {
+		s = s[:total] + "…"
+	}
+	return s
 }
 
 // EmitContent fans an Anthropic-style message's content blocks into typed events.

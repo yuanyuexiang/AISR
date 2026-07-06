@@ -67,6 +67,13 @@ Notes for implementers:
   Claude where `user` is a tool result).
 - The daemon installs its signal handler **before** binding (avoids a startup race);
   keep it that way when editing `cmdServe`.
+- **Logging** is the `log/slog` default logger, configured once in `cmdServe`
+  (`setupLogging`): stderr by default, or a file via `--log-file` / `AISR_LOG_FILE`;
+  level `info` (default) or `debug` via `--log-level` / `AISR_LOG_LEVEL`. The API
+  layer logs an access line per request + one line per turn (`internal/api`); debug
+  adds the CLI spawn argv (`provider.StreamCommand`) and per-event kinds. Use
+  `slog.Info/Warn/Error/Debug` for new logs — don't reintroduce `log.Default()` or a
+  per-Server logger. No prompt/output content is logged.
 - **Unix socket path length limit (~104 chars on macOS)**: `~/.aisr/aisr.sock` is
   fine, but a long custom `--socket` path fails with `bind: invalid argument`.
 - **Windows**: code cross-compiles (amd64/arm64). Provider binary names are
