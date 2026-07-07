@@ -71,7 +71,9 @@ func StreamCommand(ctx context.Context, bin string, args []string, workspace str
 			}
 			msg := waitErr.Error()
 			if len(errOut) > 0 {
-				msg = string(errOut)
+				// stderr may be non-UTF-8 on Windows (a CLI/shell's localized
+				// OEM/ANSI text); transcode so it stays readable instead of "�".
+				msg = toUTF8(errOut)
 			}
 			ch <- Event{Kind: EventError, Text: msg}
 		}
