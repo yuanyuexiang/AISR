@@ -77,12 +77,18 @@ func (p *Provider) Send(ctx context.Context, opts provider.SessionOpts, prompt s
 			workspace = ws
 		}
 	}
-	return provider.StreamCommand(ctx, p.bin, buildArgs(opts, prompt, workspace), workspace, env, parseLine)
+	// Prompt goes on stdin, NOT argv: on Windows cursor-agent is a .cmd/.ps1 shim,
+	// and a multi-line prompt (system prompt is prepended above) can't survive the
+	// cmd.exe/PowerShell re-parse as an argv element — the args get split, agent
+	// flags like --trust/--force are dropped, and the turn fails. `-p` with no
+	// positional prompt makes cursor-agent read the prompt from stdin.
+	return provider.StreamCommand(ctx, p.bin, buildArgs(opts, workspace), workspace, env, prompt, parseLine)
 }
 
-// buildArgs assembles the cursor-agent argv. Pure — unit-tested directly.
-func buildArgs(opts provider.SessionOpts, prompt, workspace string) []string {
-	args := []string{"-p", prompt, "--output-format", "stream-json", "--force"}
+// buildArgs assembles the cursor-agent argv (the prompt is fed on stdin by Send,
+// not included here — see the note in Send). Pure — unit-tested directly.
+func buildArgs(opts provider.SessionOpts, workspace string) []string {
+	args := []string{"-p", "--output-format", "stream-json", "--force"}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
 	}

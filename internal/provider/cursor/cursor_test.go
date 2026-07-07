@@ -155,15 +155,21 @@ func TestParseBuiltinToolCall(t *testing.T) {
 }
 
 func TestBuildArgsAgentFlags(t *testing.T) {
-	args := buildArgs(provider.SessionOpts{Agent: &provider.AgentOptions{}}, "hi", "/ws")
+	args := buildArgs(provider.SessionOpts{Agent: &provider.AgentOptions{}}, "/ws")
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"-p hi", "--force", "--approve-mcps", "--trust", "--workspace /ws"} {
+	for _, want := range []string{"-p", "--force", "--approve-mcps", "--trust", "--workspace /ws"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("args missing %q: %v", want, args)
 		}
 	}
+	// Prompt is passed on stdin, never as an argv element.
+	for _, unwant := range []string{"hi", "PERSONA"} {
+		if strings.Contains(joined, unwant) {
+			t.Errorf("prompt leaked into argv (%q): %v", unwant, args)
+		}
+	}
 	// No agent → none of the agent flags.
-	plain := strings.Join(buildArgs(provider.SessionOpts{}, "hi", ""), " ")
+	plain := strings.Join(buildArgs(provider.SessionOpts{}, ""), " ")
 	if strings.Contains(plain, "--approve-mcps") || strings.Contains(plain, "--trust") {
 		t.Errorf("plain args should have no agent flags: %v", plain)
 	}

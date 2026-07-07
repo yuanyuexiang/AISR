@@ -49,7 +49,9 @@ func (p *Provider) Send(ctx context.Context, opts provider.SessionOpts, prompt s
 	if opts.Agent != nil {
 		env = envSlice(opts.Agent.Env)
 	}
-	return provider.StreamCommand(ctx, p.bin, buildArgs(opts, prompt), opts.Workspace, env, parseLine)
+	// Claude keeps the prompt in argv: claude is a native binary (no shell shim),
+	// so CreateProcess carries a multi-line prompt intact — no stdin needed.
+	return provider.StreamCommand(ctx, p.bin, buildArgs(opts, prompt), opts.Workspace, env, "", parseLine)
 }
 
 // envSlice flattens an env map into "K=V" entries (nil for an empty map).

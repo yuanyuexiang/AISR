@@ -23,13 +23,21 @@ type ParseFunc func(line []byte, turn *Turn, ch chan<- Event)
 // shared scaffolding for headless, line-structured CLI providers (Claude, Cursor,
 // …): spawn, stream, then surface a non-zero exit as an error event. stderr is
 // captured and used as the error message when the process fails.
-func StreamCommand(ctx context.Context, bin string, args []string, workspace string, env []string, parse ParseFunc) (*Turn, error) {
+//
+// When stdin is non-empty it is fed to the child on its standard input (and the
+// pipe is closed at EOF). Providers use this to pass a multi-line prompt out of
+// band instead of as an argv element — argv can't safely carry newlines through a
+// Windows .cmd/.bat shim (e.g. cursor-agent), which mangles the split args.
+func StreamCommand(ctx context.Context, bin string, args []string, workspace string, env []string, stdin string, parse ParseFunc) (*Turn, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	if workspace != "" {
 		cmd.Dir = workspace
 	}
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
+	}
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
